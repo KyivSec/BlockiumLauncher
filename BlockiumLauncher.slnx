@@ -1,0 +1,18 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/BlockiumLauncher.Application/BlockiumLauncher.Application.csproj" />
+    <Project Path="src/BlockiumLauncher.Contracts/BlockiumLauncher.Contracts.csproj" />
+    <Project Path="src/BlockiumLauncher.Domain/BlockiumLauncher.Domain.csproj" />
+    <Project Path="src/BlockiumLauncher.Host.Cli/BlockiumLauncher.Host.Cli.csproj" />
+    <Project Path="src/BlockiumLauncher.Host.WinUI/BlockiumLauncher.Host.WinUI.csproj" />
+    <Project Path="src/BlockiumLauncher.Infrastructure/BlockiumLauncher.Infrastructure.csproj" />
+    <Project Path="src/BlockiumLauncher.Shared/BlockiumLauncher.Shared.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/BlockiumLauncher.Application.Tests/BlockiumLauncher.Application.Tests.csproj" />
+    <Project Path="tests/BlockiumLauncher.Domain.Tests/BlockiumLauncher.Domain.Tests.csproj" />
+    <Project Path="tests/BlockiumLauncher.Infrastructure.Tests/BlockiumLauncher.Infrastructure.Tests.csproj" />
+    <Project Path="tests/BlockiumLauncher.Shared.Tests/BlockiumLauncher.Shared.Tests.csproj" />
+  </Folder>
+  <Project Path="BlockiumLauncher.csproj" />
+</Solution>

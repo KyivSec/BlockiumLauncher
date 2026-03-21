@@ -1,0 +1,16 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <ItemGroup>
+    <ProjectReference Include="..\BlockiumLauncher.Shared\BlockiumLauncher.Shared.csproj" />
+    <ProjectReference Include="..\BlockiumLauncher.Contracts\BlockiumLauncher.Contracts.csproj" />
+    <ProjectReference Include="..\BlockiumLauncher.Application\BlockiumLauncher.Application.csproj" />
+    <ProjectReference Include="..\BlockiumLauncher.Infrastructure\BlockiumLauncher.Infrastructure.csproj" />
+  </ItemGroup>
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+</Project>
