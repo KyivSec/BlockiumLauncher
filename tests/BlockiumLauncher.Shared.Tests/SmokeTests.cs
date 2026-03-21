@@ -1,10 +1,12 @@
-﻿namespace BlockiumLauncher.Shared.Tests;
+﻿using Xunit;
 
-public class UnitTest1
+namespace BlockiumLauncher.Shared.Tests;
+
+public sealed class SmokeTests
 {
     [Fact]
-    public void Test1()
+    public void SmokeTest()
     {
-
+        Assert.True(true);
     }
 }
