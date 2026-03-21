@@ -11,4 +11,9 @@
 		<PackageVersion Include="Microsoft.Extensions.DependencyInjection" Version="10.0.0" />
 		<PackageVersion Include="GtkSharp" Version="3.24.24.95" />
 	</ItemGroup>
+
+  <ItemGroup>
+    <PackageVersion Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="10.0.0" />
+    <PackageVersion Include="Microsoft.Extensions.Http" Version="10.0.0" />
+  </ItemGroup>
 </Project>
