@@ -11,7 +11,7 @@ public sealed class MainWindow : Window
         DeleteEvent += (_, Args) =>
         {
             Args.RetVal = false;
-            Application.Quit();
+            Gtk.Application.Quit();
         };
     }
 }
