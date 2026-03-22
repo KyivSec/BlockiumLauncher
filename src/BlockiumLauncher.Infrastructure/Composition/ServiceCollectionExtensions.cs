@@ -4,6 +4,7 @@ using BlockiumLauncher.Application.Abstractions.Services;
 using BlockiumLauncher.Application.UseCases.Accounts;
 using BlockiumLauncher.Application.UseCases.Install;
 using BlockiumLauncher.Application.UseCases.Java;
+using BlockiumLauncher.Application.UseCases.Launch;
 using BlockiumLauncher.Infrastructure.Auth;
 using BlockiumLauncher.Infrastructure.Downloads;
 using BlockiumLauncher.Infrastructure.Java;
@@ -58,12 +59,15 @@ public static class ServiceCollectionExtensions
         Services.AddTransient<VerifyInstanceFilesUseCase>();
         Services.AddTransient<RepairInstanceUseCase>();
         Services.AddTransient<BuildUpdatePlanUseCase>();
+        Services.AddTransient<BuildLaunchPlanUseCase>();
 
         Services.AddTransient<AddAccountUseCase>();
         Services.AddTransient<ListAccountsUseCase>();
         Services.AddTransient<SetDefaultAccountUseCase>();
         Services.AddTransient<RemoveAccountUseCase>();
         Services.AddTransient<SignInMicrosoftUseCase>();
+        Services.AddTransient<GetDefaultAccountUseCase>();
+        Services.AddTransient<ResolveOfflineLaunchAccountUseCase>();
 
         return Services;
     }
