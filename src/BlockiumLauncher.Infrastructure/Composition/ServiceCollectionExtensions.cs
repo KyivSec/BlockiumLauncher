@@ -13,6 +13,7 @@ using BlockiumLauncher.Infrastructure.Launch;
 using BlockiumLauncher.Infrastructure.Metadata;
 using BlockiumLauncher.Infrastructure.Metadata.Clients;
 using BlockiumLauncher.Infrastructure.Persistence.Repositories;
+using BlockiumLauncher.Infrastructure.Persistence.Json;
 using BlockiumLauncher.Infrastructure.Services;
 using Microsoft.Extensions.DependencyInjection;
 
@@ -49,7 +50,8 @@ public static class ServiceCollectionExtensions
         Services.AddSingleton<BlockiumLauncher.Application.Abstractions.Storage.ITempWorkspaceFactory, BlockiumLauncher.Infrastructure.Storage.TempWorkspaceFactory>();
         Services.AddTransient<BlockiumLauncher.Application.Abstractions.Storage.IArchiveExtractor, BlockiumLauncher.Infrastructure.Storage.ZipArchiveExtractor>();
         Services.AddTransient<BlockiumLauncher.Application.Abstractions.Storage.IFileTransaction, BlockiumLauncher.Infrastructure.Storage.FileTransaction>();
-        Services.AddTransient<BlockiumLauncher.Application.Abstractions.Storage.IInstanceContentInstaller, BlockiumLauncher.Infrastructure.Storage.InstanceContentInstaller>();
+        Services.AddTransient<BlockiumLauncher.Application.Abstractions.Storage.IInstanceContentInstaller, BlockiumLauncher.Infrastructure.Storage.InstanceContentInstaller>();        Services.AddSingleton<JsonFileStore>();
+
 
         Services.AddSingleton<IAccountRepository, JsonAccountRepository>();
         Services.AddSingleton<BlockiumLauncher.Application.Abstractions.Security.ITokenStore, BlockiumLauncher.Infrastructure.Security.WindowsProtectedTokenStore>();
