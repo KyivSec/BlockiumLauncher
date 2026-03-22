@@ -14,6 +14,7 @@ using BlockiumLauncher.Infrastructure.Metadata;
 using BlockiumLauncher.Infrastructure.Metadata.Clients;
 using BlockiumLauncher.Infrastructure.Persistence.Repositories;
 using BlockiumLauncher.Infrastructure.Persistence.Json;
+using BlockiumLauncher.Infrastructure.Persistence.Paths;
 using BlockiumLauncher.Infrastructure.Services;
 using Microsoft.Extensions.DependencyInjection;
 
@@ -51,9 +52,9 @@ public static class ServiceCollectionExtensions
         Services.AddTransient<BlockiumLauncher.Application.Abstractions.Storage.IArchiveExtractor, BlockiumLauncher.Infrastructure.Storage.ZipArchiveExtractor>();
         Services.AddTransient<BlockiumLauncher.Application.Abstractions.Storage.IFileTransaction, BlockiumLauncher.Infrastructure.Storage.FileTransaction>();
         Services.AddTransient<BlockiumLauncher.Application.Abstractions.Storage.IInstanceContentInstaller, BlockiumLauncher.Infrastructure.Storage.InstanceContentInstaller>();        Services.AddSingleton<JsonFileStore>();
+        Services.AddSingleton<ILauncherPaths>(_ => new LauncherPaths(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "BlockiumLauncher")));
+        Services.AddSingleton<IMetadataCacheRepository, JsonMetadataCacheRepository>();
 
-
-        Services.AddSingleton<IAccountRepository, JsonAccountRepository>();
         Services.AddSingleton<BlockiumLauncher.Application.Abstractions.Security.ITokenStore, BlockiumLauncher.Infrastructure.Security.WindowsProtectedTokenStore>();
         Services.AddSingleton<IMicrosoftAuthProvider, PlaceholderMicrosoftAuthProvider>();
         Services.AddSingleton<ILaunchProcessRunner, LaunchProcessRunner>();

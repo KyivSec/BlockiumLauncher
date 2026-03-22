@@ -1,4 +1,5 @@
 using System.Text.Json;
+using BlockiumLauncher.Application.Abstractions.Services;
 using BlockiumLauncher.Application.UseCases.Accounts;
 using BlockiumLauncher.Application.UseCases.Install;
 using BlockiumLauncher.Application.UseCases.Launch;
@@ -95,6 +96,16 @@ internal static class Program
         if (args.Length >= 2 && Is(args[0], "launch") && Is(args[1], "stop"))
         {
             return await HandleLaunchStopAsync(serviceProvider, args.Skip(2).ToArray(), outputJson).ConfigureAwait(false);
+        }
+
+        if (args.Length >= 2 && Is(args[0], "versions") && Is(args[1], "vanilla"))
+        {
+            return await HandleVersionsVanillaAsync(serviceProvider, outputJson).ConfigureAwait(false);
+        }
+
+        if (args.Length >= 2 && Is(args[0], "versions") && Is(args[1], "loaders"))
+        {
+            return await HandleVersionsLoadersAsync(serviceProvider, args.Skip(2).ToArray(), outputJson).ConfigureAwait(false);
         }
 
         WriteHelp(outputJson);
@@ -542,6 +553,90 @@ internal static class Program
         return CliExitCodes.Success;
     }
 
+    private static async Task<int> HandleVersionsVanillaAsync(IServiceProvider serviceProvider, bool outputJson)
+    {
+        var service = serviceProvider.GetRequiredService<IVersionManifestService>();
+        var result = await service.GetAvailableVersionsAsync(CancellationToken.None).ConfigureAwait(false);
+
+        if (result.IsFailure)
+        {
+            WriteFailure(result.Error.Code, result.Error.Message, outputJson);
+            return CliExitCodes.OperationFailed;
+        }
+
+        var payload = result.Value.ToArray();
+
+        WriteSuccess(payload, outputJson, lines =>
+        {
+            if (payload.Length == 0)
+            {
+                lines.Add("No vanilla versions returned.");
+                return;
+            }
+
+            foreach (var item in payload)
+            {
+                lines.Add(JsonSerializer.Serialize(item, JsonOptions));
+            }
+        });
+
+        return CliExitCodes.Success;
+    }
+
+    private static async Task<int> HandleVersionsLoadersAsync(IServiceProvider serviceProvider, string[] args, bool outputJson)
+    {
+        var loaderText = GetRequiredOption(args, "--loader");
+        var gameVersionText = GetRequiredOption(args, "--game-version");
+
+        if (string.IsNullOrWhiteSpace(loaderText) || string.IsNullOrWhiteSpace(gameVersionText))
+        {
+            WriteFailure("Cli.InvalidArguments", "Required: --loader <fabric|quilt|forge|neoforge|vanilla> --game-version <version>", outputJson);
+            return CliExitCodes.InvalidArguments;
+        }
+
+        if (!Enum.TryParse<LoaderType>(loaderText, true, out var loaderType))
+        {
+            WriteFailure("Cli.InvalidArguments", $"Unknown loader type: {loaderText}", outputJson);
+            return CliExitCodes.InvalidArguments;
+        }
+
+        if (loaderType == LoaderType.Vanilla)
+        {
+            WriteFailure("Cli.InvalidArguments", "Use `versions vanilla` for vanilla Minecraft versions.", outputJson);
+            return CliExitCodes.InvalidArguments;
+        }
+
+        var service = serviceProvider.GetRequiredService<ILoaderMetadataService>();
+        var result = await service.GetLoaderVersionsAsync(
+            loaderType,
+            new VersionId(gameVersionText),
+            CancellationToken.None).ConfigureAwait(false);
+
+        if (result.IsFailure)
+        {
+            WriteFailure(result.Error.Code, result.Error.Message, outputJson);
+            return CliExitCodes.OperationFailed;
+        }
+
+        var payload = result.Value.ToArray();
+
+        WriteSuccess(payload, outputJson, lines =>
+        {
+            if (payload.Length == 0)
+            {
+                lines.Add($"No loader versions returned for {loaderType} on {gameVersionText}.");
+                return;
+            }
+
+            foreach (var item in payload)
+            {
+                lines.Add(JsonSerializer.Serialize(item, JsonOptions));
+            }
+        });
+
+        return CliExitCodes.Success;
+    }
+
     private static async Task<(bool IsFailure, int ExitCode, string? ErrorCode, string? ErrorMessage, LaunchPlanDto? Plan)> BuildLaunchPlanAsync(IServiceProvider serviceProvider, string[] args)
     {
         var instanceIdText = GetRequiredOption(args, "--instance-id");
@@ -639,7 +734,9 @@ internal static class Program
                 "launch plan --instance-id <id> --java <path> --main-class <class> --classpath <entry> [--classpath <entry> ...] [--assets-dir <path>] [--asset-index <id>] [--account-id <id>] [--json]",
                 "launch run --instance-id <id> --java <path> --main-class <class> --classpath <entry> [--classpath <entry> ...] [--assets-dir <path>] [--asset-index <id>] [--account-id <id>] [--json]",
                 "launch status --launch-id <guid> [--json]",
-                "launch stop --launch-id <guid> [--json]"
+                "launch stop --launch-id <guid> [--json]",
+                "versions vanilla [--json]",
+                "versions loaders --loader <fabric|quilt|forge|neoforge> --game-version <version> [--json]"
             }
         };
 
