@@ -100,7 +100,7 @@ internal static class Program
 
         if (args.Length >= 2 && Is(args[0], "versions") && Is(args[1], "vanilla"))
         {
-            return await HandleVersionsVanillaAsync(serviceProvider, outputJson).ConfigureAwait(false);
+            return await HandleVersionsVanillaAsync(serviceProvider, args.Skip(2).ToArray(), outputJson).ConfigureAwait(false);
         }
 
         if (args.Length >= 2 && Is(args[0], "versions") && Is(args[1], "loaders"))
@@ -553,7 +553,7 @@ internal static class Program
         return CliExitCodes.Success;
     }
 
-    private static async Task<int> HandleVersionsVanillaAsync(IServiceProvider serviceProvider, bool outputJson)
+    private static async Task<int> HandleVersionsVanillaAsync(IServiceProvider serviceProvider, string[] args, bool outputJson)
     {
         var service = serviceProvider.GetRequiredService<IVersionManifestService>();
         var result = await service.GetAvailableVersionsAsync(CancellationToken.None).ConfigureAwait(false);
@@ -564,13 +564,32 @@ internal static class Program
             return CliExitCodes.OperationFailed;
         }
 
-        var payload = result.Value.ToArray();
+        var requestedTypes = GetMultiOption(args, "--type")
+            .Select(NormalizeVanillaType)
+            .Where(x => x is not null)
+            .Cast<string>()
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+
+        var latestOnly = HasFlag(args, "--latest");
+
+        var filtered = result.Value
+            .Where(version => requestedTypes.Length == 0 || MatchesVanillaType(version, requestedTypes))
+            .OrderByDescending(version => version.ReleasedAtUtc)
+            .ToList();
+
+        if (latestOnly && filtered.Count > 1)
+        {
+            filtered = [filtered[0]];
+        }
+
+        var payload = filtered.ToArray();
 
         WriteSuccess(payload, outputJson, lines =>
         {
             if (payload.Length == 0)
             {
-                lines.Add("No vanilla versions returned.");
+                lines.Add("No vanilla versions matched the requested filter.");
                 return;
             }
 
@@ -719,6 +738,75 @@ internal static class Program
         return values;
     }
 
+    private static string? NormalizeVanillaType(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return null;
+        }
+
+        return value.Trim().ToLowerInvariant() switch
+        {
+            "release" => "release",
+            "snapshot" => "snapshot",
+            "beta" => "beta",
+            "alpha" => "alpha",
+            "experimental" => "experimental",
+            _ => null
+        };
+    }
+
+    private static bool MatchesVanillaType(dynamic version, string[] requestedTypes)
+    {
+        var versionId = (string?)version.Id ?? string.Empty;
+        var versionType = (string?)version.Type ?? string.Empty;
+
+        foreach (var requestedType in requestedTypes)
+        {
+            switch (requestedType)
+            {
+                case "release":
+                    if (string.Equals(versionType, "release", StringComparison.OrdinalIgnoreCase))
+                    {
+                        return true;
+                    }
+                    break;
+
+                case "snapshot":
+                    if (string.Equals(versionType, "snapshot", StringComparison.OrdinalIgnoreCase))
+                    {
+                        return true;
+                    }
+                    break;
+
+                case "beta":
+                    if (string.Equals(versionType, "old_beta", StringComparison.OrdinalIgnoreCase) ||
+                        versionId.Contains("beta", StringComparison.OrdinalIgnoreCase))
+                    {
+                        return true;
+                    }
+                    break;
+
+                case "alpha":
+                    if (string.Equals(versionType, "old_alpha", StringComparison.OrdinalIgnoreCase) ||
+                        versionId.Contains("alpha", StringComparison.OrdinalIgnoreCase))
+                    {
+                        return true;
+                    }
+                    break;
+
+                case "experimental":
+                    if (versionId.Contains("experimental", StringComparison.OrdinalIgnoreCase))
+                    {
+                        return true;
+                    }
+                    break;
+            }
+        }
+
+        return false;
+    }
+
     private static void WriteHelp(bool outputJson)
     {
         var payload = new
@@ -735,7 +823,7 @@ internal static class Program
                 "launch run --instance-id <id> --java <path> --main-class <class> --classpath <entry> [--classpath <entry> ...] [--assets-dir <path>] [--asset-index <id>] [--account-id <id>] [--json]",
                 "launch status --launch-id <guid> [--json]",
                 "launch stop --launch-id <guid> [--json]",
-                "versions vanilla [--json]",
+                "versions vanilla [--type <release|snapshot|beta|alpha|experimental>] [--latest] [--json]",
                 "versions loaders --loader <fabric|quilt|forge|neoforge> --game-version <version> [--json]"
             }
         };
