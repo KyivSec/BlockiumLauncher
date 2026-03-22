@@ -1,8 +1,9 @@
+using System.Collections.Generic;
 using BlockiumLauncher.Domain.Enums;
 
 namespace BlockiumLauncher.Application.UseCases.Install;
 
-public sealed class InstallInstanceRequest
+public sealed class InstallPlan
 {
     public string InstanceName { get; init; } = string.Empty;
 
@@ -12,7 +13,7 @@ public sealed class InstallInstanceRequest
 
     public string? LoaderVersion { get; init; }
 
-    public string? TargetDirectory { get; init; }
+    public string TargetDirectory { get; init; } = string.Empty;
 
-    public bool OverwriteIfExists { get; init; }
+    public IReadOnlyList<InstallPlanStep> Steps { get; init; } = [];
 }
