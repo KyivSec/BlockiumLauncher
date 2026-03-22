@@ -426,5 +426,7 @@ public sealed class BuildLaunchPlanUseCase
         public string AssetsDirectory { get; init; } = string.Empty;
         public string AssetIndexId { get; init; } = string.Empty;
         public string NativesDirectory { get; init; } = string.Empty;
+        public string[] ExtraJvmArguments { get; init; } = [];
+        public string[] ExtraGameArguments { get; init; } = [];
     }
 }

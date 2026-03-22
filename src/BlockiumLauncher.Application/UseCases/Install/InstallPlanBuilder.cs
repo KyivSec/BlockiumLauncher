@@ -9,6 +9,7 @@ using System.Threading.Tasks;
 using BlockiumLauncher.Application.Abstractions.Services;
 using BlockiumLauncher.Domain.Enums;
 using BlockiumLauncher.Shared.Results;
+using BlockiumLauncher.Domain.ValueObjects;
 
 namespace BlockiumLauncher.Application.UseCases.Install;
 
@@ -164,13 +165,21 @@ public sealed class InstallPlanBuilder
 
     private async Task<bool> TryValidateLoaderVersionAsync(LoaderType LoaderType, string GameVersion, string LoaderVersion, CancellationToken CancellationToken)
     {
-        var Values = await CollectValuesAsync(LoaderMetadataService, CancellationToken).ConfigureAwait(false);
-        if (Values.Count == 0)
+        var GameVersionId = CreateVersionId(GameVersion);
+
+        var Result = await LoaderMetadataService
+            .GetLoaderVersionsAsync(LoaderType, GameVersionId, CancellationToken)
+            .ConfigureAwait(false);
+
+        if (Result.IsFailure)
         {
-            return true;
+            return false;
         }
 
-        return Values.Any(Value => MatchesLoaderVersion(Value, LoaderType, GameVersion, LoaderVersion));
+        return Result.Value.Any(Value =>
+            Value.LoaderType == LoaderType &&
+            string.Equals(Value.GameVersion.ToString(), GameVersion, StringComparison.OrdinalIgnoreCase) &&
+            string.Equals(Value.LoaderVersion, LoaderVersion, StringComparison.OrdinalIgnoreCase));
     }
 
     private static async Task<List<object?>> CollectValuesAsync(object Service, CancellationToken CancellationToken)
@@ -313,7 +322,7 @@ public sealed class InstallPlanBuilder
         var Type = Value.GetType();
 
         var LoaderTypeValue = Type.GetProperty("LoaderType", BindingFlags.Instance | BindingFlags.Public | BindingFlags.IgnoreCase)?.GetValue(Value)?.ToString();
-        var VersionIdValue = Type.GetProperty("VersionId", BindingFlags.Instance | BindingFlags.Public | BindingFlags.IgnoreCase)?.GetValue(Value)?.ToString();
+        var GameVersionValue = Type.GetProperty("GameVersion", BindingFlags.Instance | BindingFlags.Public | BindingFlags.IgnoreCase)?.GetValue(Value)?.ToString();
         var LoaderVersionValue = Type.GetProperty("LoaderVersion", BindingFlags.Instance | BindingFlags.Public | BindingFlags.IgnoreCase)?.GetValue(Value)?.ToString();
 
         if (!string.IsNullOrWhiteSpace(LoaderTypeValue) &&
@@ -322,7 +331,32 @@ public sealed class InstallPlanBuilder
             return false;
         }
 
-        return string.Equals(VersionIdValue, GameVersion, StringComparison.OrdinalIgnoreCase) &&
+        return string.Equals(GameVersionValue, GameVersion, StringComparison.OrdinalIgnoreCase) &&
                string.Equals(LoaderVersionValue, LoaderVersion, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static VersionId CreateVersionId(string Value)
+    {
+        var Type = typeof(VersionId);
+
+        var ParseMethod = Type.GetMethod("Parse", BindingFlags.Public | BindingFlags.Static, null, new[] { typeof(string) }, null);
+        if (ParseMethod is not null)
+        {
+            return (VersionId)ParseMethod.Invoke(null, new object[] { Value })!;
+        }
+
+        var CreateMethod = Type.GetMethod("Create", BindingFlags.Public | BindingFlags.Static, null, new[] { typeof(string) }, null);
+        if (CreateMethod is not null)
+        {
+            return (VersionId)CreateMethod.Invoke(null, new object[] { Value })!;
+        }
+
+        var Constructor = Type.GetConstructor(new[] { typeof(string) });
+        if (Constructor is not null)
+        {
+            return (VersionId)Constructor.Invoke(new object[] { Value });
+        }
+
+        throw new InvalidOperationException("Could not create VersionId from string.");
     }
 }
