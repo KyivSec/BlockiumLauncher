@@ -1,14 +1,19 @@
-﻿namespace BlockiumLauncher.Domain.ValueObjects;
+namespace BlockiumLauncher.Domain.ValueObjects;
 
 public readonly record struct AccountId
 {
     public string Value { get; }
 
+    public AccountId(Guid Value)
+    {
+        this.Value = Value.ToString("N");
+    }
+
     public AccountId(string Value)
     {
         if (string.IsNullOrWhiteSpace(Value))
         {
-            throw new ArgumentException("AccountId cannot be null or whitespace.", nameof(Value));
+            throw new ArgumentException("Value cannot be null or whitespace.", nameof(Value));
         }
 
         this.Value = Value.Trim();
@@ -16,7 +21,7 @@ public readonly record struct AccountId
 
     public static AccountId New()
     {
-        return new(Guid.NewGuid().ToString("N"));
+        return new AccountId(Guid.NewGuid());
     }
 
     public override string ToString()

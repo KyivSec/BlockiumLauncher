@@ -1,4 +1,4 @@
-﻿using BlockiumLauncher.Domain.Enums;
+using BlockiumLauncher.Domain.Enums;
 using BlockiumLauncher.Domain.ValueObjects;
 
 namespace BlockiumLauncher.Domain.Entities;
@@ -6,98 +6,183 @@ namespace BlockiumLauncher.Domain.Entities;
 public sealed class LauncherAccount
 {
     public AccountId AccountId { get; }
-    public string DisplayName { get; private set; }
     public AccountProvider Provider { get; }
-    public string AccessTokenRef { get; private set; }
+    public string Username { get; private set; }
+    public string? AccountIdentifier { get; private set; }
+    public string? AccessTokenRef { get; private set; }
     public string? RefreshTokenRef { get; private set; }
     public bool IsDefault { get; private set; }
-    public DateTimeOffset? LastValidatedAtUtc { get; private set; }
     public AccountState State { get; private set; }
+    public DateTimeOffset? ValidatedAtUtc { get; private set; }
 
     private LauncherAccount(
         AccountId AccountId,
-        string DisplayName,
         AccountProvider Provider,
-        string AccessTokenRef,
+        string Username,
+        string? AccountIdentifier,
+        string? AccessTokenRef,
         string? RefreshTokenRef,
-        bool IsDefault)
+        bool IsDefault,
+        AccountState State,
+        DateTimeOffset? ValidatedAtUtc)
     {
-        this.AccountId = AccountId;
-        this.DisplayName = NormalizeRequired(DisplayName, nameof(DisplayName));
-        this.Provider = Provider;
-        this.AccessTokenRef = NormalizeRequired(AccessTokenRef, nameof(AccessTokenRef));
-        this.RefreshTokenRef = NormalizeOptional(RefreshTokenRef);
-        this.IsDefault = IsDefault;
-        State = AccountState.Active;
+        if (string.IsNullOrWhiteSpace(Username))
+        {
+            throw new ArgumentException("Username cannot be null or whitespace.", nameof(Username));
+        }
 
-        ValidateProvider(Provider, this.RefreshTokenRef);
+        if (Provider == AccountProvider.Microsoft && string.IsNullOrWhiteSpace(AccountIdentifier))
+        {
+            throw new ArgumentException("Microsoft accounts require an account identifier.", nameof(AccountIdentifier));
+        }
+
+        if (Provider == AccountProvider.Microsoft && string.IsNullOrWhiteSpace(RefreshTokenRef))
+        {
+            throw new ArgumentException("Microsoft accounts require a refresh token reference.", nameof(RefreshTokenRef));
+        }
+
+        if (Provider == AccountProvider.Offline && !string.IsNullOrWhiteSpace(AccountIdentifier))
+        {
+            throw new ArgumentException("Offline accounts cannot define an account identifier.", nameof(AccountIdentifier));
+        }
+
+        this.AccountId = AccountId;
+        this.Provider = Provider;
+        this.Username = Username.Trim();
+        this.AccountIdentifier = Normalize(AccountIdentifier);
+        this.AccessTokenRef = Normalize(AccessTokenRef);
+        this.RefreshTokenRef = Normalize(RefreshTokenRef);
+        this.IsDefault = IsDefault;
+        this.State = State;
+        this.ValidatedAtUtc = ValidatedAtUtc;
+    }
+
+    public static LauncherAccount Create(
+        AccountId AccountId,
+        AccountProvider Provider,
+        string Username,
+        string? AccountIdentifier,
+        string? AccessTokenRef,
+        string? RefreshTokenRef,
+        bool IsDefault,
+        AccountState State = AccountState.Invalid,
+        DateTimeOffset? ValidatedAtUtc = null)
+    {
+        return new LauncherAccount(
+            AccountId,
+            Provider,
+            Username,
+            AccountIdentifier,
+            AccessTokenRef,
+            RefreshTokenRef,
+            IsDefault,
+            State,
+            ValidatedAtUtc);
     }
 
     public static LauncherAccount CreateOffline(
         AccountId AccountId,
-        string DisplayName,
-        string AccessTokenRef,
+        string Username,
+        string? AccessTokenRef = null,
         bool IsDefault = false)
     {
-        return new(
+        return new LauncherAccount(
             AccountId,
-            DisplayName,
             AccountProvider.Offline,
+            Username,
+            null,
             AccessTokenRef,
             null,
-            IsDefault);
+            IsDefault,
+            AccountState.Invalid,
+            null);
+    }
+
+    public static LauncherAccount CreateOffline(
+        string Username,
+        string? AccessTokenRef = null,
+        bool IsDefault = false)
+    {
+        return CreateOffline(AccountId.New(), Username, AccessTokenRef, IsDefault);
     }
 
     public static LauncherAccount CreateMicrosoft(
         AccountId AccountId,
-        string DisplayName,
-        string AccessTokenRef,
-        string RefreshTokenRef,
+        string Username,
+        string AccountIdentifier,
+        string? RefreshTokenRef,
         bool IsDefault = false)
     {
-        return new(
+        return new LauncherAccount(
             AccountId,
-            DisplayName,
             AccountProvider.Microsoft,
-            AccessTokenRef,
+            Username,
+            AccountIdentifier,
+            null,
             RefreshTokenRef,
-            IsDefault);
+            IsDefault,
+            AccountState.Invalid,
+            null);
     }
 
-    public void Rename(string DisplayName)
+    public static LauncherAccount CreateMicrosoft(
+        string Username,
+        string AccountIdentifier,
+        string? RefreshTokenRef,
+        bool IsDefault = false)
     {
-        EnsureNotRemoved();
-        this.DisplayName = NormalizeRequired(DisplayName, nameof(DisplayName));
+        return CreateMicrosoft(AccountId.New(), Username, AccountIdentifier, RefreshTokenRef, IsDefault);
     }
 
-    public void MarkDefault()
+    public void Rename(string Username)
     {
-        EnsureNotRemoved();
-        IsDefault = true;
+        if (string.IsNullOrWhiteSpace(Username))
+        {
+            throw new ArgumentException("Username cannot be null or whitespace.", nameof(Username));
+        }
+
+        this.Username = Username.Trim();
     }
 
-    public void ClearDefault()
+    public void SetAccountIdentifier(string? AccountIdentifier)
     {
-        IsDefault = false;
+        if (Provider == AccountProvider.Microsoft && string.IsNullOrWhiteSpace(AccountIdentifier))
+        {
+            throw new ArgumentException("Microsoft accounts require an account identifier.", nameof(AccountIdentifier));
+        }
+
+        if (Provider == AccountProvider.Offline && !string.IsNullOrWhiteSpace(AccountIdentifier))
+        {
+            throw new InvalidOperationException("Offline accounts cannot define an account identifier.");
+        }
+
+        this.AccountIdentifier = Normalize(AccountIdentifier);
     }
 
-    public void MarkValidated(DateTimeOffset TimestampUtc)
+    public void SetAccessTokenRef(string? AccessTokenRef)
     {
-        EnsureNotRemoved();
+        this.AccessTokenRef = Normalize(AccessTokenRef);
+    }
+
+    public void SetRefreshTokenRef(string? RefreshTokenRef)
+    {
+        if (Provider == AccountProvider.Microsoft && string.IsNullOrWhiteSpace(RefreshTokenRef))
+        {
+            throw new ArgumentException("Microsoft accounts require a refresh token reference.", nameof(RefreshTokenRef));
+        }
+
+        this.RefreshTokenRef = Normalize(RefreshTokenRef);
+    }
+
+    public void MarkValidated(DateTimeOffset ValidatedAtUtc)
+    {
+        if (State == AccountState.Removed)
+        {
+            throw new InvalidOperationException("Removed accounts cannot be validated.");
+        }
+
         State = AccountState.Active;
-        LastValidatedAtUtc = TimestampUtc;
-    }
-
-    public void MarkExpired()
-    {
-        EnsureNotRemoved();
-        State = AccountState.Expired;
-    }
-
-    public void MarkInvalid()
-    {
-        EnsureNotRemoved();
-        State = AccountState.Invalid;
+        this.ValidatedAtUtc = ValidatedAtUtc;
     }
 
     public void MarkRemoved()
@@ -106,33 +191,22 @@ public sealed class LauncherAccount
         IsDefault = false;
     }
 
-    private void EnsureNotRemoved()
+    public void SetDefault()
     {
         if (State == AccountState.Removed)
         {
-            throw new InvalidOperationException("Removed accounts cannot be modified.");
+            throw new InvalidOperationException("Removed accounts cannot be default.");
         }
+
+        IsDefault = true;
     }
 
-    private static void ValidateProvider(AccountProvider Provider, string? RefreshTokenRef)
+    public void ClearDefault()
     {
-        if (Provider == AccountProvider.Microsoft && string.IsNullOrWhiteSpace(RefreshTokenRef))
-        {
-            throw new ArgumentException("Microsoft accounts require a refresh token reference.", nameof(RefreshTokenRef));
-        }
+        IsDefault = false;
     }
 
-    private static string NormalizeRequired(string Value, string ParameterName)
-    {
-        if (string.IsNullOrWhiteSpace(Value))
-        {
-            throw new ArgumentException("Value cannot be null or whitespace.", ParameterName);
-        }
-
-        return Value.Trim();
-    }
-
-    private static string? NormalizeOptional(string? Value)
+    private static string? Normalize(string? Value)
     {
         return string.IsNullOrWhiteSpace(Value) ? null : Value.Trim();
     }

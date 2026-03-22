@@ -1,7 +1,7 @@
-﻿namespace BlockiumLauncher.Domain.Enums;
+namespace BlockiumLauncher.Domain.Enums;
 
 public enum AccountProvider
 {
-    Offline = 0,
-    Microsoft = 1
+    Microsoft = 1,
+    Offline = 2
 }

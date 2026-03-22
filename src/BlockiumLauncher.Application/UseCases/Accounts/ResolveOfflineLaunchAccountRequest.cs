@@ -2,7 +2,7 @@ using BlockiumLauncher.Domain.ValueObjects;
 
 namespace BlockiumLauncher.Application.UseCases.Accounts;
 
-public sealed class RemoveAccountRequest
+public sealed class ResolveOfflineLaunchAccountRequest
 {
-    public AccountId AccountId { get; init; }
+    public AccountId? AccountId { get; init; }
 }

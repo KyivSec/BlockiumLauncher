@@ -1,10 +1,15 @@
+using BlockiumLauncher.Application.Abstractions.Auth;
+using BlockiumLauncher.Application.Abstractions.Repositories;
 using BlockiumLauncher.Application.Abstractions.Services;
+using BlockiumLauncher.Application.UseCases.Accounts;
 using BlockiumLauncher.Application.UseCases.Install;
 using BlockiumLauncher.Application.UseCases.Java;
+using BlockiumLauncher.Infrastructure.Auth;
 using BlockiumLauncher.Infrastructure.Downloads;
 using BlockiumLauncher.Infrastructure.Java;
 using BlockiumLauncher.Infrastructure.Metadata;
 using BlockiumLauncher.Infrastructure.Metadata.Clients;
+using BlockiumLauncher.Infrastructure.Persistence.Repositories;
 using BlockiumLauncher.Infrastructure.Services;
 using Microsoft.Extensions.DependencyInjection;
 
@@ -43,12 +48,22 @@ public static class ServiceCollectionExtensions
         Services.AddTransient<BlockiumLauncher.Application.Abstractions.Storage.IFileTransaction, BlockiumLauncher.Infrastructure.Storage.FileTransaction>();
         Services.AddTransient<BlockiumLauncher.Application.Abstractions.Storage.IInstanceContentInstaller, BlockiumLauncher.Infrastructure.Storage.InstanceContentInstaller>();
 
+        Services.AddSingleton<IAccountRepository, JsonAccountRepository>();
+        Services.AddSingleton<BlockiumLauncher.Application.Abstractions.Security.ITokenStore, BlockiumLauncher.Infrastructure.Security.WindowsProtectedTokenStore>();
+        Services.AddSingleton<IMicrosoftAuthProvider, PlaceholderMicrosoftAuthProvider>();
+
         Services.AddTransient<InstallPlanBuilder>();
         Services.AddTransient<InstallInstanceUseCase>();
         Services.AddTransient<ImportInstanceUseCase>();
         Services.AddTransient<VerifyInstanceFilesUseCase>();
         Services.AddTransient<RepairInstanceUseCase>();
         Services.AddTransient<BuildUpdatePlanUseCase>();
+
+        Services.AddTransient<AddAccountUseCase>();
+        Services.AddTransient<ListAccountsUseCase>();
+        Services.AddTransient<SetDefaultAccountUseCase>();
+        Services.AddTransient<RemoveAccountUseCase>();
+        Services.AddTransient<SignInMicrosoftUseCase>();
 
         return Services;
     }
