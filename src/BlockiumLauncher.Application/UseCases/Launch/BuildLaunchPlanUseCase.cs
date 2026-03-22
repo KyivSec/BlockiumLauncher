@@ -1,5 +1,8 @@
+using System.Text.Json;
+using BlockiumLauncher.Application.Abstractions.Diagnostics;
 using BlockiumLauncher.Application.Abstractions.Repositories;
 using BlockiumLauncher.Application.Abstractions.Services;
+using BlockiumLauncher.Application.Diagnostics;
 using BlockiumLauncher.Application.UseCases.Accounts;
 using BlockiumLauncher.Contracts.Launch;
 using BlockiumLauncher.Domain.Enums;
@@ -13,41 +16,91 @@ public sealed class BuildLaunchPlanUseCase
     private readonly ResolveOfflineLaunchAccountUseCase ResolveOfflineLaunchAccountUseCase;
     private readonly IVersionManifestService VersionManifestService;
     private readonly ILoaderMetadataService LoaderMetadataService;
+    private readonly IJavaRuntimeResolver JavaRuntimeResolver;
+    private readonly IStructuredLogger Logger;
+    private readonly IOperationContextFactory OperationContextFactory;
 
     public BuildLaunchPlanUseCase(
         IInstanceRepository InstanceRepository,
         ResolveOfflineLaunchAccountUseCase ResolveOfflineLaunchAccountUseCase,
         IVersionManifestService VersionManifestService,
         ILoaderMetadataService LoaderMetadataService)
+        : this(
+            InstanceRepository,
+            ResolveOfflineLaunchAccountUseCase,
+            VersionManifestService,
+            LoaderMetadataService,
+            NoOpJavaRuntimeResolver.Instance,
+            NullStructuredLogger.Instance,
+            DefaultOperationContextFactory.Instance)
+    {
+    }
+
+    public BuildLaunchPlanUseCase(
+        IInstanceRepository InstanceRepository,
+        ResolveOfflineLaunchAccountUseCase ResolveOfflineLaunchAccountUseCase,
+        IVersionManifestService VersionManifestService,
+        ILoaderMetadataService LoaderMetadataService,
+        IStructuredLogger Logger,
+        IOperationContextFactory OperationContextFactory)
+        : this(
+            InstanceRepository,
+            ResolveOfflineLaunchAccountUseCase,
+            VersionManifestService,
+            LoaderMetadataService,
+            NoOpJavaRuntimeResolver.Instance,
+            Logger,
+            OperationContextFactory)
+    {
+    }
+
+    public BuildLaunchPlanUseCase(
+        IInstanceRepository InstanceRepository,
+        ResolveOfflineLaunchAccountUseCase ResolveOfflineLaunchAccountUseCase,
+        IVersionManifestService VersionManifestService,
+        ILoaderMetadataService LoaderMetadataService,
+        IJavaRuntimeResolver JavaRuntimeResolver,
+        IStructuredLogger Logger,
+        IOperationContextFactory OperationContextFactory)
     {
         this.InstanceRepository = InstanceRepository ?? throw new ArgumentNullException(nameof(InstanceRepository));
         this.ResolveOfflineLaunchAccountUseCase = ResolveOfflineLaunchAccountUseCase ?? throw new ArgumentNullException(nameof(ResolveOfflineLaunchAccountUseCase));
         this.VersionManifestService = VersionManifestService ?? throw new ArgumentNullException(nameof(VersionManifestService));
         this.LoaderMetadataService = LoaderMetadataService ?? throw new ArgumentNullException(nameof(LoaderMetadataService));
+        this.JavaRuntimeResolver = JavaRuntimeResolver ?? throw new ArgumentNullException(nameof(JavaRuntimeResolver));
+        this.Logger = Logger ?? throw new ArgumentNullException(nameof(Logger));
+        this.OperationContextFactory = OperationContextFactory ?? throw new ArgumentNullException(nameof(OperationContextFactory));
     }
 
     public async Task<Result<LaunchPlanDto>> ExecuteAsync(
         BuildLaunchPlanRequest Request,
         CancellationToken CancellationToken = default)
     {
+        var Context = OperationContextFactory.Create("BuildLaunchPlan");
+
         if (Request is null)
         {
+            Logger.Warning(Context, nameof(BuildLaunchPlanUseCase), "InvalidRequest", "Launch plan request was null.");
             return Result<LaunchPlanDto>.Failure(LaunchErrors.InvalidRequest);
         }
 
-        if (string.IsNullOrWhiteSpace(Request.JavaExecutablePath))
+        Logger.Info(Context, nameof(BuildLaunchPlanUseCase), "LaunchPlanStarted", "Launch plan build started.", new
         {
-            return Result<LaunchPlanDto>.Failure(LaunchErrors.JavaExecutableMissing);
-        }
-
-        if (string.IsNullOrWhiteSpace(Request.MainClass))
-        {
-            return Result<LaunchPlanDto>.Failure(LaunchErrors.MainClassMissing);
-        }
+            InstanceId = Request.InstanceId.ToString(),
+            AccountId = Request.AccountId?.ToString(),
+            Request.JavaExecutablePath,
+            Request.MainClass,
+            Request.IsDryRun
+        });
 
         var Instance = await InstanceRepository.GetByIdAsync(Request.InstanceId, CancellationToken).ConfigureAwait(false);
         if (Instance is null)
         {
+            Logger.Warning(Context, nameof(BuildLaunchPlanUseCase), "InstanceNotFound", "Launch plan instance was not found.", new
+            {
+                InstanceId = Request.InstanceId.ToString()
+            });
+
             return Result<LaunchPlanDto>.Failure(LaunchErrors.InstanceNotFound);
         }
 
@@ -57,7 +110,31 @@ public sealed class BuildLaunchPlanUseCase
             return Result<LaunchPlanDto>.Failure(LaunchErrors.InstanceDirectoryMissing);
         }
 
-        var JavaExecutablePath = Path.GetFullPath(Request.JavaExecutablePath);
+        string JavaExecutablePath;
+        if (string.IsNullOrWhiteSpace(Request.JavaExecutablePath))
+        {
+            var JavaResolveResult = await JavaRuntimeResolver.ResolveExecutablePathAsync(
+                Instance.GameVersion.ToString(),
+                CancellationToken).ConfigureAwait(false);
+
+            if (JavaResolveResult.IsFailure)
+            {
+                Logger.Warning(Context, nameof(BuildLaunchPlanUseCase), "JavaAutoResolveFailed", "Automatic Java resolution failed.", new
+                {
+                    JavaResolveResult.Error.Code,
+                    JavaResolveResult.Error.Message
+                });
+
+                return Result<LaunchPlanDto>.Failure(LaunchErrors.JavaExecutableMissing);
+            }
+
+            JavaExecutablePath = Path.GetFullPath(JavaResolveResult.Value);
+        }
+        else
+        {
+            JavaExecutablePath = Path.GetFullPath(Request.JavaExecutablePath);
+        }
+
         if (!File.Exists(JavaExecutablePath))
         {
             return Result<LaunchPlanDto>.Failure(LaunchErrors.JavaExecutableMissing);
@@ -103,56 +180,47 @@ public sealed class BuildLaunchPlanUseCase
         }
 
         var Account = AccountResult.Value;
+        var RuntimeMetadata = TryLoadRuntimeMetadata(WorkingDirectory);
 
-        string? AssetsDirectory = null;
-        string? AssetIndexId = null;
-
-        if (!string.IsNullOrWhiteSpace(Request.AssetsDirectory))
+        var ResolvedMainClass = ResolveMainClass(Request, RuntimeMetadata);
+        if (string.IsNullOrWhiteSpace(ResolvedMainClass))
         {
-            AssetsDirectory = Path.GetFullPath(Request.AssetsDirectory);
-            if (!Directory.Exists(AssetsDirectory))
-            {
-                return Result<LaunchPlanDto>.Failure(LaunchErrors.AssetsDirectoryMissing);
-            }
-
-            if (string.IsNullOrWhiteSpace(Request.AssetIndexId))
-            {
-                return Result<LaunchPlanDto>.Failure(LaunchErrors.AssetIndexMissing);
-            }
-
-            var TrimmedAssetIndexId = Request.AssetIndexId.Trim();
-            AssetIndexId = TrimmedAssetIndexId;
+            return Result<LaunchPlanDto>.Failure(LaunchErrors.MainClassMissing);
         }
 
-        if (Request.ClasspathEntries is null || Request.ClasspathEntries.Count == 0)
+        var ClasspathEntries = ResolveClasspathEntries(Request, RuntimeMetadata, WorkingDirectory);
+        if (ClasspathEntries.Count == 0)
         {
             return Result<LaunchPlanDto>.Failure(LaunchErrors.ClasspathMissing);
         }
 
-        var ClasspathEntries = new List<string>();
-        foreach (var Entry in Request.ClasspathEntries)
+        string? AssetsDirectory = ResolveAssetsDirectory(Request, RuntimeMetadata, WorkingDirectory);
+        string? AssetIndexId = ResolveAssetIndexId(Request, RuntimeMetadata);
+
+        if (AssetsDirectory is not null && !Directory.Exists(AssetsDirectory))
         {
-            if (string.IsNullOrWhiteSpace(Entry))
-            {
-                return Result<LaunchPlanDto>.Failure(LaunchErrors.ClasspathEntryMissing);
-            }
+            return Result<LaunchPlanDto>.Failure(LaunchErrors.AssetsDirectoryMissing);
+        }
 
-            var FullEntry = Path.GetFullPath(Entry);
-            if (!File.Exists(FullEntry) && !Directory.Exists(FullEntry))
-            {
-                return Result<LaunchPlanDto>.Failure(LaunchErrors.ClasspathEntryMissing);
-            }
-
-            ClasspathEntries.Add(FullEntry);
+        if (AssetsDirectory is not null && string.IsNullOrWhiteSpace(AssetIndexId))
+        {
+            return Result<LaunchPlanDto>.Failure(LaunchErrors.AssetIndexMissing);
         }
 
         var JvmArguments = new List<LaunchArgumentDto>
         {
             new() { Value = "-Xms" + Instance.LaunchProfile.MinMemoryMb + "m" },
-            new() { Value = "-Xmx" + Instance.LaunchProfile.MaxMemoryMb + "m" },
-            new() { Value = "-cp" },
-            new() { Value = string.Join(Path.PathSeparator, ClasspathEntries) }
+            new() { Value = "-Xmx" + Instance.LaunchProfile.MaxMemoryMb + "m" }
         };
+
+        var NativesDirectory = ResolveNativesDirectory(RuntimeMetadata, WorkingDirectory);
+        if (!string.IsNullOrWhiteSpace(NativesDirectory))
+        {
+            JvmArguments.Add(new LaunchArgumentDto { Value = "-Djava.library.path=" + NativesDirectory });
+        }
+
+        JvmArguments.Add(new LaunchArgumentDto { Value = "-cp" });
+        JvmArguments.Add(new LaunchArgumentDto { Value = string.Join(Path.PathSeparator, ClasspathEntries) });
 
         foreach (var Arg in Instance.LaunchProfile.ExtraJvmArgs)
         {
@@ -163,12 +231,20 @@ public sealed class BuildLaunchPlanUseCase
         {
             new() { Value = "--username" },
             new() { Value = Account.Username },
-            new() { Value = "--uuid" },
-            new() { Value = Account.PlayerUuid },
+            new() { Value = "--version" },
+            new() { Value = Instance.GameVersion.ToString() },
             new() { Value = "--gameDir" },
             new() { Value = WorkingDirectory },
-            new() { Value = "--version" },
-            new() { Value = Instance.GameVersion.ToString() }
+            new() { Value = "--uuid" },
+            new() { Value = Account.PlayerUuid },
+            new() { Value = "--accessToken" },
+            new() { Value = "0" },
+            new() { Value = "--userType" },
+            new() { Value = "legacy" },
+            new() { Value = "--versionType" },
+            new() { Value = "release" },
+            new() { Value = "--userProperties" },
+            new() { Value = "{}" }
         };
 
         if (AssetsDirectory is not null)
@@ -206,13 +282,13 @@ public sealed class BuildLaunchPlanUseCase
             })
             .ToList();
 
-        return Result<LaunchPlanDto>.Success(new LaunchPlanDto
+        var Plan = new LaunchPlanDto
         {
             InstanceId = Instance.InstanceId.ToString(),
             AccountId = Account.AccountId,
             JavaExecutablePath = JavaExecutablePath,
             WorkingDirectory = WorkingDirectory,
-            MainClass = Request.MainClass.Trim(),
+            MainClass = ResolvedMainClass,
             AssetsDirectory = AssetsDirectory,
             AssetIndexId = AssetIndexId,
             ClasspathEntries = ClasspathEntries,
@@ -220,6 +296,135 @@ public sealed class BuildLaunchPlanUseCase
             GameArguments = GameArguments,
             EnvironmentVariables = EnvironmentVariables,
             IsDryRun = Request.IsDryRun
+        };
+
+        Logger.Info(Context, nameof(BuildLaunchPlanUseCase), "LaunchPlanCompleted", "Launch plan build completed.", new
+        {
+            Plan.InstanceId,
+            Plan.AccountId,
+            ClasspathCount = Plan.ClasspathEntries.Count,
+            JvmArgumentCount = Plan.JvmArguments.Count,
+            GameArgumentCount = Plan.GameArguments.Count,
+            ResolvedFromRuntimeMetadata = RuntimeMetadata is not null,
+            JavaExecutablePath = Plan.JavaExecutablePath
         });
+
+        return Result<LaunchPlanDto>.Success(Plan);
+    }
+
+    private static RuntimeMetadataDto? TryLoadRuntimeMetadata(string WorkingDirectory)
+    {
+        var RuntimePath = Path.Combine(WorkingDirectory, ".blockium", "runtime.json");
+        if (!File.Exists(RuntimePath))
+        {
+            return null;
+        }
+
+        var Json = File.ReadAllText(RuntimePath);
+        return JsonSerializer.Deserialize<RuntimeMetadataDto>(Json, new JsonSerializerOptions
+        {
+            PropertyNameCaseInsensitive = true
+        });
+    }
+
+    private static string? ResolveMainClass(BuildLaunchPlanRequest Request, RuntimeMetadataDto? RuntimeMetadata)
+    {
+        if (!string.IsNullOrWhiteSpace(Request.MainClass))
+        {
+            return Request.MainClass.Trim();
+        }
+
+        if (!string.IsNullOrWhiteSpace(RuntimeMetadata?.MainClass))
+        {
+            return RuntimeMetadata.MainClass.Trim();
+        }
+
+        return null;
+    }
+
+    private static List<string> ResolveClasspathEntries(BuildLaunchPlanRequest Request, RuntimeMetadataDto? RuntimeMetadata, string WorkingDirectory)
+    {
+        var SourceEntries = Request.ClasspathEntries is not null && Request.ClasspathEntries.Count > 0
+            ? Request.ClasspathEntries
+            : RuntimeMetadata?.ClasspathEntries ?? [];
+
+        var Result = new List<string>();
+
+        foreach (var Entry in SourceEntries)
+        {
+            if (string.IsNullOrWhiteSpace(Entry))
+            {
+                continue;
+            }
+
+            var FullEntry = Path.IsPathRooted(Entry)
+                ? Path.GetFullPath(Entry)
+                : Path.GetFullPath(Path.Combine(WorkingDirectory, Entry));
+
+            if (!File.Exists(FullEntry) && !Directory.Exists(FullEntry))
+            {
+                continue;
+            }
+
+            Result.Add(FullEntry);
+        }
+
+        return Result;
+    }
+
+    private static string? ResolveAssetsDirectory(BuildLaunchPlanRequest Request, RuntimeMetadataDto? RuntimeMetadata, string WorkingDirectory)
+    {
+        var Value = !string.IsNullOrWhiteSpace(Request.AssetsDirectory)
+            ? Request.AssetsDirectory
+            : RuntimeMetadata?.AssetsDirectory;
+
+        if (string.IsNullOrWhiteSpace(Value))
+        {
+            return null;
+        }
+
+        return Path.IsPathRooted(Value)
+            ? Path.GetFullPath(Value)
+            : Path.GetFullPath(Path.Combine(WorkingDirectory, Value));
+    }
+
+    private static string? ResolveAssetIndexId(BuildLaunchPlanRequest Request, RuntimeMetadataDto? RuntimeMetadata)
+    {
+        if (!string.IsNullOrWhiteSpace(Request.AssetIndexId))
+        {
+            return Request.AssetIndexId.Trim();
+        }
+
+        if (!string.IsNullOrWhiteSpace(RuntimeMetadata?.AssetIndexId))
+        {
+            return RuntimeMetadata.AssetIndexId.Trim();
+        }
+
+        return null;
+    }
+
+    private static string? ResolveNativesDirectory(RuntimeMetadataDto? RuntimeMetadata, string WorkingDirectory)
+    {
+        if (string.IsNullOrWhiteSpace(RuntimeMetadata?.NativesDirectory))
+        {
+            return null;
+        }
+
+        var FullPath = Path.IsPathRooted(RuntimeMetadata.NativesDirectory)
+            ? Path.GetFullPath(RuntimeMetadata.NativesDirectory)
+            : Path.GetFullPath(Path.Combine(WorkingDirectory, RuntimeMetadata.NativesDirectory));
+
+        return Directory.Exists(FullPath) ? FullPath : null;
+    }
+
+    private sealed class RuntimeMetadataDto
+    {
+        public string Version { get; init; } = string.Empty;
+        public string MainClass { get; init; } = string.Empty;
+        public string ClientJarPath { get; init; } = string.Empty;
+        public IReadOnlyList<string> ClasspathEntries { get; init; } = [];
+        public string AssetsDirectory { get; init; } = string.Empty;
+        public string AssetIndexId { get; init; } = string.Empty;
+        public string NativesDirectory { get; init; } = string.Empty;
     }
 }

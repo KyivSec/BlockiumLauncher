@@ -1,4 +1,6 @@
+using System.IO;
 using BlockiumLauncher.Application.Abstractions.Auth;
+using BlockiumLauncher.Application.Abstractions.Diagnostics;
 using BlockiumLauncher.Application.Abstractions.Launch;
 using BlockiumLauncher.Application.Abstractions.Repositories;
 using BlockiumLauncher.Application.Abstractions.Services;
@@ -7,14 +9,15 @@ using BlockiumLauncher.Application.UseCases.Install;
 using BlockiumLauncher.Application.UseCases.Java;
 using BlockiumLauncher.Application.UseCases.Launch;
 using BlockiumLauncher.Infrastructure.Auth;
+using BlockiumLauncher.Infrastructure.Diagnostics;
 using BlockiumLauncher.Infrastructure.Downloads;
 using BlockiumLauncher.Infrastructure.Java;
 using BlockiumLauncher.Infrastructure.Launch;
 using BlockiumLauncher.Infrastructure.Metadata;
 using BlockiumLauncher.Infrastructure.Metadata.Clients;
-using BlockiumLauncher.Infrastructure.Persistence.Repositories;
 using BlockiumLauncher.Infrastructure.Persistence.Json;
 using BlockiumLauncher.Infrastructure.Persistence.Paths;
+using BlockiumLauncher.Infrastructure.Persistence.Repositories;
 using BlockiumLauncher.Infrastructure.Services;
 using Microsoft.Extensions.DependencyInjection;
 
@@ -36,14 +39,30 @@ public static class ServiceCollectionExtensions
         Services.AddSingleton<ForgeMetadataClient>();
         Services.AddSingleton<NeoForgeMetadataClient>();
 
+        Services.AddSingleton<JsonFileStore>();
+        Services.AddSingleton<ILauncherPaths>(_ =>
+            new LauncherPaths(
+                Path.Combine(
+                    Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+                    "BlockiumLauncher")));
+
+        Services.AddSingleton<IMetadataCacheRepository, JsonMetadataCacheRepository>();
+        Services.AddSingleton<IAccountRepository, JsonAccountRepository>();
+        Services.AddSingleton<IInstanceRepository, JsonInstanceRepository>();
+
         Services.AddSingleton<IVersionManifestService, CachedVersionManifestService>();
         Services.AddSingleton<ILoaderMetadataService, CachedLoaderMetadataService>();
+
+        Services.AddSingleton<ISecretRedactor, SensitiveDataRedactor>();
+        Services.AddSingleton<IStructuredLogger, FileStructuredLogger>();
+        Services.AddSingleton<IOperationContextFactory, BlockiumLauncher.Application.Diagnostics.DefaultOperationContextFactory>();
 
         Services.AddSingleton<IDownloader, HttpDownloader>();
 
         Services.AddSingleton<IJavaVersionProbe, JavaVersionProbe>();
         Services.AddSingleton<IJavaValidationService, JavaValidationService>();
         Services.AddSingleton<IJavaDiscoveryService, JavaDiscoveryService>();
+        Services.AddSingleton<IJavaRuntimeResolver, ManagedJavaRuntimeResolver>();
 
         Services.AddTransient<DiscoverJavaUseCase>();
         Services.AddTransient<ValidateJavaUseCase>();
@@ -51,9 +70,7 @@ public static class ServiceCollectionExtensions
         Services.AddSingleton<BlockiumLauncher.Application.Abstractions.Storage.ITempWorkspaceFactory, BlockiumLauncher.Infrastructure.Storage.TempWorkspaceFactory>();
         Services.AddTransient<BlockiumLauncher.Application.Abstractions.Storage.IArchiveExtractor, BlockiumLauncher.Infrastructure.Storage.ZipArchiveExtractor>();
         Services.AddTransient<BlockiumLauncher.Application.Abstractions.Storage.IFileTransaction, BlockiumLauncher.Infrastructure.Storage.FileTransaction>();
-        Services.AddTransient<BlockiumLauncher.Application.Abstractions.Storage.IInstanceContentInstaller, BlockiumLauncher.Infrastructure.Storage.InstanceContentInstaller>();        Services.AddSingleton<JsonFileStore>();
-        Services.AddSingleton<ILauncherPaths>(_ => new LauncherPaths(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "BlockiumLauncher")));
-        Services.AddSingleton<IMetadataCacheRepository, JsonMetadataCacheRepository>();
+        Services.AddTransient<BlockiumLauncher.Application.Abstractions.Storage.IInstanceContentInstaller, BlockiumLauncher.Infrastructure.Storage.InstanceContentInstaller>();
 
         Services.AddSingleton<BlockiumLauncher.Application.Abstractions.Security.ITokenStore, BlockiumLauncher.Infrastructure.Security.WindowsProtectedTokenStore>();
         Services.AddSingleton<IMicrosoftAuthProvider, PlaceholderMicrosoftAuthProvider>();

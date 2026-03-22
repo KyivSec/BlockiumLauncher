@@ -29,7 +29,7 @@ internal static class Program
             var services = new ServiceCollection();
             services.AddBlockiumLauncherInfrastructure();
 
-            using var serviceProvider = services.BuildServiceProvider();
+            await using var serviceProvider = services.BuildServiceProvider();
 
             if (filteredArgs.Length == 0)
             {
@@ -66,6 +66,11 @@ internal static class Program
         if (args.Length >= 2 && Is(args[0], "accounts") && Is(args[1], "remove"))
         {
             return await HandleAccountsRemoveAsync(serviceProvider, args.Skip(2).ToArray(), outputJson).ConfigureAwait(false);
+        }
+
+        if (args.Length >= 2 && Is(args[0], "instances") && Is(args[1], "install"))
+        {
+            return await HandleInstancesInstallAsync(serviceProvider, args.Skip(2).ToArray(), outputJson).ConfigureAwait(false);
         }
 
         if (args.Length >= 2 && Is(args[0], "instances") && Is(args[1], "verify"))
@@ -106,6 +111,11 @@ internal static class Program
         if (args.Length >= 2 && Is(args[0], "versions") && Is(args[1], "loaders"))
         {
             return await HandleVersionsLoadersAsync(serviceProvider, args.Skip(2).ToArray(), outputJson).ConfigureAwait(false);
+        }
+
+        if (args.Length >= 2 && Is(args[0], "diagnostics") && Is(args[1], "dump"))
+        {
+            return await HandleDiagnosticsDumpAsync(args.Skip(2).ToArray(), outputJson).ConfigureAwait(false);
         }
 
         WriteHelp(outputJson);
@@ -246,6 +256,85 @@ internal static class Program
         WriteSuccess(new { AccountId = accountIdText }, outputJson, lines =>
         {
             lines.Add($"Account removed: {accountIdText}");
+        });
+
+        return CliExitCodes.Success;
+    }
+
+    private static async Task<int> HandleInstancesInstallAsync(IServiceProvider serviceProvider, string[] args, bool outputJson)
+    {
+        var name = GetRequiredOption(args, "--name");
+        var version = GetRequiredOption(args, "--version");
+        var loaderText = GetRequiredOption(args, "--loader");
+        var loaderVersion = GetOptionalOption(args, "--loader-version");
+        var targetDirectory = GetOptionalOption(args, "--path");
+        var overwrite = HasFlag(args, "--overwrite");
+        var downloadRuntime = HasFlag(args, "--download-runtime");
+
+        if (string.IsNullOrWhiteSpace(name) ||
+            string.IsNullOrWhiteSpace(version) ||
+            string.IsNullOrWhiteSpace(loaderText))
+        {
+            WriteFailure(
+                "Cli.InvalidArguments",
+                "Required: --name <name> --version <version> --loader <vanilla|fabric|quilt|forge|neoforge> [--loader-version <version>] [--path <directory>] [--overwrite] [--download-runtime]",
+                outputJson);
+            return CliExitCodes.InvalidArguments;
+        }
+
+        if (!Enum.TryParse<LoaderType>(loaderText, true, out var loaderType))
+        {
+            WriteFailure("Cli.InvalidArguments", $"Unknown loader type: {loaderText}", outputJson);
+            return CliExitCodes.InvalidArguments;
+        }
+
+        if (loaderType == LoaderType.Vanilla)
+        {
+            loaderVersion = null;
+        }
+        else if (string.IsNullOrWhiteSpace(loaderVersion))
+        {
+            WriteFailure("Cli.InvalidArguments", "Non-vanilla installs require --loader-version.", outputJson);
+            return CliExitCodes.InvalidArguments;
+        }
+
+        Console.WriteLine("Install started. Logs are being written to %APPDATA%\\BlockiumLauncher\\logs.");
+
+        var useCase = serviceProvider.GetRequiredService<InstallInstanceUseCase>();
+        var result = await useCase.ExecuteAsync(new InstallInstanceRequest
+        {
+            InstanceName = name,
+            GameVersion = version,
+            LoaderType = loaderType,
+            LoaderVersion = loaderVersion,
+            TargetDirectory = targetDirectory,
+            OverwriteIfExists = overwrite,
+            DownloadRuntime = downloadRuntime
+        }).ConfigureAwait(false);
+
+        if (result.IsFailure)
+        {
+            WriteFailure(result.Error.Code, result.Error.Message, outputJson);
+            return CliExitCodes.OperationFailed;
+        }
+
+        var payload = new
+        {
+            InstanceId = result.Value.Instance.InstanceId.ToString(),
+            result.Value.Instance.Name,
+            GameVersion = result.Value.Instance.GameVersion.ToString(),
+            result.Value.Instance.LoaderType,
+            LoaderVersion = result.Value.Instance.LoaderVersion?.ToString(),
+            result.Value.InstalledPath
+        };
+
+        WriteSuccess(payload, outputJson, lines =>
+        {
+            lines.Add($"Instance installed: {payload.Name} ({payload.InstanceId})");
+            lines.Add($"GameVersion: {payload.GameVersion}");
+            lines.Add($"Loader: {payload.LoaderType}");
+            lines.Add($"LoaderVersion: {payload.LoaderVersion ?? "<none>"}");
+            lines.Add($"InstalledPath: {payload.InstalledPath}");
         });
 
         return CliExitCodes.Success;
@@ -393,23 +482,22 @@ internal static class Program
     {
         var instanceIdText = GetRequiredOption(args, "--instance-id");
         var javaPath = GetRequiredOption(args, "--java");
-        var mainClass = GetRequiredOption(args, "--main-class");
+        var mainClass = GetOptionalOption(args, "--main-class") ?? string.Empty;
         var accountIdText = GetOptionalOption(args, "--account-id");
         var assetsDir = GetOptionalOption(args, "--assets-dir");
         var assetIndex = GetOptionalOption(args, "--asset-index");
         var classpathEntries = GetMultiOption(args, "--classpath");
 
-        if (string.IsNullOrWhiteSpace(instanceIdText) ||
-            string.IsNullOrWhiteSpace(javaPath) ||
-            string.IsNullOrWhiteSpace(mainClass) ||
-            classpathEntries.Count == 0)
+        if (string.IsNullOrWhiteSpace(instanceIdText) || string.IsNullOrWhiteSpace(javaPath))
         {
             WriteFailure(
                 "Cli.InvalidArguments",
-                "Required: --instance-id <id> --java <path> --main-class <class> --classpath <entry> [--classpath <entry> ...]",
+                "Required: --instance-id <id> --java <path>. Optional overrides: --main-class, --classpath, --assets-dir, --asset-index, --account-id",
                 outputJson);
             return CliExitCodes.InvalidArguments;
         }
+
+        Console.WriteLine("Launch started. Logs are being written to %APPDATA%\\BlockiumLauncher\\logs.");
 
         var useCase = serviceProvider.GetRequiredService<LaunchInstanceUseCase>();
         var result = await useCase.ExecuteAsync(new LaunchInstanceRequest
@@ -656,22 +744,70 @@ internal static class Program
         return CliExitCodes.Success;
     }
 
+    private static async Task<int> HandleDiagnosticsDumpAsync(string[] args, bool outputJson)
+    {
+        var outputPath = GetOptionalOption(args, "--output");
+        var dumpDirectory = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+            "BlockiumLauncher",
+            "diagnostics");
+
+        Directory.CreateDirectory(dumpDirectory);
+
+        var resolvedOutputPath = string.IsNullOrWhiteSpace(outputPath)
+            ? Path.Combine(dumpDirectory, "dump-" + DateTime.UtcNow.ToString("yyyyMMdd-HHmmss") + ".json")
+            : Path.GetFullPath(outputPath);
+
+        var logsDirectory = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+            "BlockiumLauncher",
+            "logs");
+
+        Directory.CreateDirectory(logsDirectory);
+
+        var latestLogFile = Directory.GetFiles(logsDirectory, "*.jsonl")
+            .OrderByDescending(File.GetLastWriteTimeUtc)
+            .FirstOrDefault();
+
+        var recentLogLines = latestLogFile is null
+            ? Array.Empty<string>()
+            : File.ReadAllLines(latestLogFile).TakeLast(200).ToArray();
+
+        var payload = new
+        {
+            CreatedAtUtc = DateTimeOffset.UtcNow,
+            AppDataRoot = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "BlockiumLauncher"),
+            LogsDirectory = logsDirectory,
+            LatestLogFile = latestLogFile,
+            RecentLogLines = recentLogLines
+        };
+
+        await File.WriteAllTextAsync(
+            resolvedOutputPath,
+            JsonSerializer.Serialize(payload, JsonOptions)).ConfigureAwait(false);
+
+        WriteSuccess(new { OutputPath = resolvedOutputPath }, outputJson, lines =>
+        {
+            lines.Add("Diagnostics dump written.");
+            lines.Add(resolvedOutputPath);
+        });
+
+        return CliExitCodes.Success;
+    }
+
     private static async Task<(bool IsFailure, int ExitCode, string? ErrorCode, string? ErrorMessage, LaunchPlanDto? Plan)> BuildLaunchPlanAsync(IServiceProvider serviceProvider, string[] args)
     {
         var instanceIdText = GetRequiredOption(args, "--instance-id");
         var javaPath = GetRequiredOption(args, "--java");
-        var mainClass = GetRequiredOption(args, "--main-class");
+        var mainClass = GetOptionalOption(args, "--main-class") ?? string.Empty;
         var accountIdText = GetOptionalOption(args, "--account-id");
         var assetsDir = GetOptionalOption(args, "--assets-dir");
         var assetIndex = GetOptionalOption(args, "--asset-index");
         var classpathEntries = GetMultiOption(args, "--classpath");
 
-        if (string.IsNullOrWhiteSpace(instanceIdText) ||
-            string.IsNullOrWhiteSpace(javaPath) ||
-            string.IsNullOrWhiteSpace(mainClass) ||
-            classpathEntries.Count == 0)
+        if (string.IsNullOrWhiteSpace(instanceIdText) || string.IsNullOrWhiteSpace(javaPath))
         {
-            return (true, CliExitCodes.InvalidArguments, "Cli.InvalidArguments", "Required: --instance-id <id> --java <path> --main-class <class> --classpath <entry> [--classpath <entry> ...]", null);
+            return (true, CliExitCodes.InvalidArguments, "Cli.InvalidArguments", "Required: --instance-id <id> --java <path>. Optional overrides: --main-class, --classpath, --assets-dir, --asset-index, --account-id", null);
         }
 
         var useCase = serviceProvider.GetRequiredService<BuildLaunchPlanUseCase>();
@@ -758,38 +894,39 @@ internal static class Program
 
     private static bool MatchesVanillaType(dynamic version, string[] requestedTypes)
     {
-        var versionId = (string?)version.Id ?? string.Empty;
-        var versionType = (string?)version.Type ?? string.Empty;
+        var versionId = (string?)version.VersionId?.ToString() ?? string.Empty;
+        var isRelease = (bool)version.IsRelease;
 
         foreach (var requestedType in requestedTypes)
         {
             switch (requestedType)
             {
                 case "release":
-                    if (string.Equals(versionType, "release", StringComparison.OrdinalIgnoreCase))
+                    if (isRelease)
                     {
                         return true;
                     }
                     break;
 
                 case "snapshot":
-                    if (string.Equals(versionType, "snapshot", StringComparison.OrdinalIgnoreCase))
+                    if (!isRelease &&
+                        !versionId.Contains("alpha", StringComparison.OrdinalIgnoreCase) &&
+                        !versionId.Contains("beta", StringComparison.OrdinalIgnoreCase) &&
+                        !versionId.Contains("experimental", StringComparison.OrdinalIgnoreCase))
                     {
                         return true;
                     }
                     break;
 
                 case "beta":
-                    if (string.Equals(versionType, "old_beta", StringComparison.OrdinalIgnoreCase) ||
-                        versionId.Contains("beta", StringComparison.OrdinalIgnoreCase))
+                    if (versionId.Contains("beta", StringComparison.OrdinalIgnoreCase))
                     {
                         return true;
                     }
                     break;
 
                 case "alpha":
-                    if (string.Equals(versionType, "old_alpha", StringComparison.OrdinalIgnoreCase) ||
-                        versionId.Contains("alpha", StringComparison.OrdinalIgnoreCase))
+                    if (versionId.Contains("alpha", StringComparison.OrdinalIgnoreCase))
                     {
                         return true;
                     }
@@ -817,14 +954,16 @@ internal static class Program
                 "accounts add-offline --username <name> [--set-default] [--json]",
                 "accounts set-default --account-id <id> [--json]",
                 "accounts remove --account-id <id> [--json]",
+                "instances install --name <name> --version <version> --loader <vanilla|fabric|quilt|forge|neoforge> [--loader-version <version>] [--path <directory>] [--overwrite] [--download-runtime] [--json]",
                 "instances verify --instance-id <id> [--json]",
                 "instances repair --instance-id <id> [--json]",
-                "launch plan --instance-id <id> --java <path> --main-class <class> --classpath <entry> [--classpath <entry> ...] [--assets-dir <path>] [--asset-index <id>] [--account-id <id>] [--json]",
-                "launch run --instance-id <id> --java <path> --main-class <class> --classpath <entry> [--classpath <entry> ...] [--assets-dir <path>] [--asset-index <id>] [--account-id <id>] [--json]",
+                "launch plan --instance-id <id> --java <path> [--main-class <class>] [--classpath <entry> ...] [--assets-dir <path>] [--asset-index <id>] [--account-id <id>] [--json]",
+                "launch run --instance-id <id> --java <path> [--main-class <class>] [--classpath <entry> ...] [--assets-dir <path>] [--asset-index <id>] [--account-id <id>] [--json]",
                 "launch status --launch-id <guid> [--json]",
                 "launch stop --launch-id <guid> [--json]",
                 "versions vanilla [--type <release|snapshot|beta|alpha|experimental>] [--latest] [--json]",
-                "versions loaders --loader <fabric|quilt|forge|neoforge> --game-version <version> [--json]"
+                "versions loaders --loader <fabric|quilt|forge|neoforge> --game-version <version> [--json]",
+                "diagnostics dump [--output <path>] [--json]"
             }
         };
 

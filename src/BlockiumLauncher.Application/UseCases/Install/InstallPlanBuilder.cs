@@ -99,6 +99,7 @@ public sealed class InstallPlanBuilder
                 LoaderType = Request.LoaderType,
                 LoaderVersion = string.IsNullOrWhiteSpace(Request.LoaderVersion) ? null : Request.LoaderVersion.Trim(),
                 TargetDirectory = TargetDirectory,
+                DownloadRuntime = Request.DownloadRuntime,
                 Steps = Steps
             };
 
@@ -117,13 +118,37 @@ public sealed class InstallPlanBuilder
             return Path.GetFullPath(Request.TargetDirectory.Trim());
         }
 
-        var SafeName = string.Join(
-            "_",
-            Request.InstanceName
-                .Trim()
-                .Split(Path.GetInvalidFileNameChars(), StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries));
+        var SafeName = SanitizeInstanceDirectoryName(Request.InstanceName);
+        var RootDirectory = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+            "BlockiumLauncher",
+            "instances");
 
-        return Path.GetFullPath(Path.Combine(Environment.CurrentDirectory, "instances", SafeName));
+        Directory.CreateDirectory(RootDirectory);
+
+        return Path.GetFullPath(Path.Combine(RootDirectory, SafeName));
+    }
+
+    private static string SanitizeInstanceDirectoryName(string Value)
+    {
+        var InvalidChars = Path.GetInvalidFileNameChars();
+        var Buffer = Value.Trim().ToCharArray();
+
+        for (var Index = 0; Index < Buffer.Length; Index++)
+        {
+            if (InvalidChars.Contains(Buffer[Index]))
+            {
+                Buffer[Index] = '_';
+            }
+        }
+
+        var Sanitized = new string(Buffer).Trim();
+        if (string.IsNullOrWhiteSpace(Sanitized))
+        {
+            return "instance";
+        }
+
+        return Sanitized;
     }
 
     private async Task<bool> TryValidateGameVersionAsync(string GameVersion, CancellationToken CancellationToken)

@@ -3,6 +3,8 @@ using System.Collections.Generic;
 using System.IO;
 using System.Threading;
 using System.Threading.Tasks;
+using BlockiumLauncher.Application.Abstractions.Diagnostics;
+using BlockiumLauncher.Application.Diagnostics;
 using BlockiumLauncher.Shared.Results;
 
 namespace BlockiumLauncher.Application.UseCases.Install;
@@ -10,20 +12,43 @@ namespace BlockiumLauncher.Application.UseCases.Install;
 public sealed class RepairInstanceUseCase
 {
     private readonly VerifyInstanceFilesUseCase VerifyInstanceFilesUseCase;
+    private readonly IStructuredLogger Logger;
+    private readonly IOperationContextFactory OperationContextFactory;
 
     public RepairInstanceUseCase(VerifyInstanceFilesUseCase VerifyInstanceFilesUseCase)
+        : this(
+            VerifyInstanceFilesUseCase,
+            NullStructuredLogger.Instance,
+            DefaultOperationContextFactory.Instance)
+    {
+    }
+
+    public RepairInstanceUseCase(
+        VerifyInstanceFilesUseCase VerifyInstanceFilesUseCase,
+        IStructuredLogger Logger,
+        IOperationContextFactory OperationContextFactory)
     {
         this.VerifyInstanceFilesUseCase = VerifyInstanceFilesUseCase ?? throw new ArgumentNullException(nameof(VerifyInstanceFilesUseCase));
+        this.Logger = Logger ?? throw new ArgumentNullException(nameof(Logger));
+        this.OperationContextFactory = OperationContextFactory ?? throw new ArgumentNullException(nameof(OperationContextFactory));
     }
 
     public async Task<Result<RepairInstanceResult>> ExecuteAsync(
         RepairInstanceRequest Request,
         CancellationToken CancellationToken = default)
     {
+        var Context = OperationContextFactory.Create("RepairInstance");
+
         if (Request is null)
         {
+            Logger.Warning(Context, nameof(RepairInstanceUseCase), "InvalidRequest", "Repair request was null.");
             return Result<RepairInstanceResult>.Failure(InstallErrors.InvalidRequest);
         }
+
+        Logger.Info(Context, nameof(RepairInstanceUseCase), "RepairStarted", "Instance repair started.", new
+        {
+            InstanceId = Request.InstanceId.ToString()
+        });
 
         var VerificationResult = await VerifyInstanceFilesUseCase.ExecuteAsync(
             new VerifyInstanceFilesRequest
@@ -34,6 +59,12 @@ public sealed class RepairInstanceUseCase
 
         if (VerificationResult.IsFailure)
         {
+            Logger.Warning(Context, nameof(RepairInstanceUseCase), "InitialVerificationFailed", "Initial verification failed.", new
+            {
+                VerificationResult.Error.Code,
+                VerificationResult.Error.Message
+            });
+
             return Result<RepairInstanceResult>.Failure(VerificationResult.Error);
         }
 
@@ -70,8 +101,21 @@ public sealed class RepairInstanceUseCase
 
         if (FinalVerificationResult.IsFailure)
         {
+            Logger.Warning(Context, nameof(RepairInstanceUseCase), "FinalVerificationFailed", "Final verification failed.", new
+            {
+                FinalVerificationResult.Error.Code,
+                FinalVerificationResult.Error.Message
+            });
+
             return Result<RepairInstanceResult>.Failure(FinalVerificationResult.Error);
         }
+
+        Logger.Info(Context, nameof(RepairInstanceUseCase), "RepairCompleted", "Instance repair completed.", new
+        {
+            InstanceId = FinalVerificationResult.Value.Instance.InstanceId.ToString(),
+            Changed = RepairedPaths.Count > 0,
+            RepairedPaths
+        });
 
         return Result<RepairInstanceResult>.Success(new RepairInstanceResult
         {
