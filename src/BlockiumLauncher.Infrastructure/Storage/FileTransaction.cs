@@ -11,8 +11,8 @@ namespace BlockiumLauncher.Infrastructure.Storage;
 
 public sealed class FileTransaction : IFileTransaction
 {
-    private string? StagingRootPath;
-    private string? StagedContentPath;
+    private string? StagedDirectoryPath;
+    private string? BackupDirectoryPath;
     private bool CommitCompleted;
 
     public string? TargetRootPath { get; private set; }
@@ -21,28 +21,22 @@ public sealed class FileTransaction : IFileTransaction
     {
         try
         {
-            CancellationToken.ThrowIfCancellationRequested();
-
             if (string.IsNullOrWhiteSpace(TargetRootPath))
             {
                 return Task.FromResult(Result<Unit>.Failure(InstallErrors.TargetPathInvalid));
             }
 
+            if (this.TargetRootPath is not null)
+            {
+                return Task.FromResult(Result<Unit>.Failure(InstallErrors.InvalidRequest));
+            }
+
             this.TargetRootPath = Path.GetFullPath(TargetRootPath);
-            StagingRootPath = Path.Combine(
-                Path.GetTempPath(),
-                "BlockiumLauncher",
-                "transactions",
-                $"{DateTime.UtcNow:yyyyMMddHHmmss}-{Guid.NewGuid():N}");
-
-            StagedContentPath = Path.Combine(StagingRootPath, "content");
-            Directory.CreateDirectory(StagedContentPath);
-
             return Task.FromResult(Result<Unit>.Success(Unit.Value));
         }
         catch
         {
-            return Task.FromResult(Result<Unit>.Failure(InstallErrors.CommitFailed));
+            return Task.FromResult(Result<Unit>.Failure(InstallErrors.TargetPathInvalid));
         }
     }
 
@@ -50,19 +44,28 @@ public sealed class FileTransaction : IFileTransaction
     {
         try
         {
-            CancellationToken.ThrowIfCancellationRequested();
+            if (TargetRootPath is null)
+            {
+                return Task.FromResult(Result<Unit>.Failure(InstallErrors.InvalidRequest));
+            }
 
-            if (string.IsNullOrWhiteSpace(StagedContentPath) || !Directory.Exists(StagedContentPath))
+            if (string.IsNullOrWhiteSpace(SourceDirectoryPath))
+            {
+                return Task.FromResult(Result<Unit>.Failure(InstallErrors.InvalidRequest));
+            }
+
+            var FullSourceDirectoryPath = Path.GetFullPath(SourceDirectoryPath);
+            if (!Directory.Exists(FullSourceDirectoryPath))
             {
                 return Task.FromResult(Result<Unit>.Failure(InstallErrors.CommitFailed));
             }
 
-            if (string.IsNullOrWhiteSpace(SourceDirectoryPath) || !Directory.Exists(SourceDirectoryPath))
+            if (StagedDirectoryPath is not null)
             {
-                return Task.FromResult(Result<Unit>.Failure(InstallErrors.CommitFailed));
+                return Task.FromResult(Result<Unit>.Failure(InstallErrors.InvalidRequest));
             }
 
-            CopyDirectory(SourceDirectoryPath, StagedContentPath, true);
+            StagedDirectoryPath = FullSourceDirectoryPath;
             return Task.FromResult(Result<Unit>.Success(Unit.Value));
         }
         catch
@@ -75,33 +78,73 @@ public sealed class FileTransaction : IFileTransaction
     {
         try
         {
-            CancellationToken.ThrowIfCancellationRequested();
-
-            if (string.IsNullOrWhiteSpace(TargetRootPath) || string.IsNullOrWhiteSpace(StagedContentPath))
+            if (TargetRootPath is null || StagedDirectoryPath is null)
             {
+                return Task.FromResult(Result<Unit>.Failure(InstallErrors.InvalidRequest));
+            }
+
+            if (CommitCompleted)
+            {
+                return Task.FromResult(Result<Unit>.Failure(InstallErrors.InvalidRequest));
+            }
+
+            var TargetParentDirectoryPath = Path.GetDirectoryName(TargetRootPath);
+            if (string.IsNullOrWhiteSpace(TargetParentDirectoryPath))
+            {
+                return Task.FromResult(Result<Unit>.Failure(InstallErrors.TargetPathInvalid));
+            }
+
+            Directory.CreateDirectory(TargetParentDirectoryPath);
+
+            BackupDirectoryPath = TargetRootPath + ".__blockium_backup__";
+            DeleteDirectoryIfExists(BackupDirectoryPath);
+
+            var TargetPreviouslyExisted = Directory.Exists(TargetRootPath);
+
+            try
+            {
+                if (TargetPreviouslyExisted)
+                {
+                    Directory.Move(TargetRootPath, BackupDirectoryPath);
+                }
+
+                Directory.Move(StagedDirectoryPath, TargetRootPath);
+
+                CommitCompleted = true;
+                StagedDirectoryPath = null;
+
+                DeleteDirectoryIfExists(BackupDirectoryPath);
+                BackupDirectoryPath = null;
+
+                return Task.FromResult(Result<Unit>.Success(Unit.Value));
+            }
+            catch
+            {
+                try
+                {
+                    if (Directory.Exists(TargetRootPath))
+                    {
+                        Directory.Delete(TargetRootPath, true);
+                    }
+                }
+                catch
+                {
+                }
+
+                try
+                {
+                    if (BackupDirectoryPath is not null && Directory.Exists(BackupDirectoryPath) && !Directory.Exists(TargetRootPath))
+                    {
+                        Directory.Move(BackupDirectoryPath, TargetRootPath);
+                    }
+                }
+                catch
+                {
+                    return Task.FromResult(Result<Unit>.Failure(InstallErrors.RollbackFailed));
+                }
+
                 return Task.FromResult(Result<Unit>.Failure(InstallErrors.CommitFailed));
             }
-
-            if (Directory.Exists(TargetRootPath))
-            {
-                return Task.FromResult(Result<Unit>.Failure(InstallErrors.InstanceAlreadyExists));
-            }
-
-            var ParentDirectory = Path.GetDirectoryName(TargetRootPath);
-            if (!string.IsNullOrWhiteSpace(ParentDirectory))
-            {
-                Directory.CreateDirectory(ParentDirectory);
-            }
-
-            Directory.Move(StagedContentPath, TargetRootPath);
-            CommitCompleted = true;
-
-            if (!string.IsNullOrWhiteSpace(StagingRootPath) && Directory.Exists(StagingRootPath))
-            {
-                Directory.Delete(StagingRootPath, true);
-            }
-
-            return Task.FromResult(Result<Unit>.Success(Unit.Value));
         }
         catch
         {
@@ -113,16 +156,29 @@ public sealed class FileTransaction : IFileTransaction
     {
         try
         {
-            CancellationToken.ThrowIfCancellationRequested();
-
-            if (!CommitCompleted && !string.IsNullOrWhiteSpace(StagingRootPath) && Directory.Exists(StagingRootPath))
+            if (CommitCompleted)
             {
-                Directory.Delete(StagingRootPath, true);
+                return Task.FromResult(Result<Unit>.Success(Unit.Value));
             }
 
-            if (!string.IsNullOrWhiteSpace(TargetRootPath) && Directory.Exists(TargetRootPath))
+            if (StagedDirectoryPath is not null)
             {
-                Directory.Delete(TargetRootPath, true);
+                DeleteDirectoryIfExists(StagedDirectoryPath);
+                StagedDirectoryPath = null;
+            }
+
+            if (TargetRootPath is not null && BackupDirectoryPath is not null)
+            {
+                if (!Directory.Exists(TargetRootPath) && Directory.Exists(BackupDirectoryPath))
+                {
+                    Directory.Move(BackupDirectoryPath, TargetRootPath);
+                }
+            }
+
+            if (BackupDirectoryPath is not null)
+            {
+                DeleteDirectoryIfExists(BackupDirectoryPath);
+                BackupDirectoryPath = null;
             }
 
             return Task.FromResult(Result<Unit>.Success(Unit.Value));
@@ -133,43 +189,16 @@ public sealed class FileTransaction : IFileTransaction
         }
     }
 
-    public ValueTask DisposeAsync()
+    public async ValueTask DisposeAsync()
     {
-        try
-        {
-            if (!string.IsNullOrWhiteSpace(StagingRootPath) && Directory.Exists(StagingRootPath))
-            {
-                Directory.Delete(StagingRootPath, true);
-            }
-        }
-        catch
-        {
-        }
-
-        return ValueTask.CompletedTask;
+        await RollbackAsync().ConfigureAwait(false);
     }
 
-    private static void CopyDirectory(string SourceDirectory, string DestinationDirectory, bool Overwrite)
+    private static void DeleteDirectoryIfExists(string PathValue)
     {
-        Directory.CreateDirectory(DestinationDirectory);
-
-        foreach (var DirectoryPath in Directory.GetDirectories(SourceDirectory, "*", SearchOption.AllDirectories))
+        if (Directory.Exists(PathValue))
         {
-            var RelativePath = Path.GetRelativePath(SourceDirectory, DirectoryPath);
-            Directory.CreateDirectory(Path.Combine(DestinationDirectory, RelativePath));
-        }
-
-        foreach (var FilePath in Directory.GetFiles(SourceDirectory, "*", SearchOption.AllDirectories))
-        {
-            var RelativePath = Path.GetRelativePath(SourceDirectory, FilePath);
-            var DestinationFilePath = Path.Combine(DestinationDirectory, RelativePath);
-            var ParentDirectory = Path.GetDirectoryName(DestinationFilePath);
-            if (!string.IsNullOrWhiteSpace(ParentDirectory))
-            {
-                Directory.CreateDirectory(ParentDirectory);
-            }
-
-            File.Copy(FilePath, DestinationFilePath, Overwrite);
+            Directory.Delete(PathValue, true);
         }
     }
 }

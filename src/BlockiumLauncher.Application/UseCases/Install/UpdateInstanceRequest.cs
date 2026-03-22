@@ -1,15 +1,12 @@
-﻿using BlockiumLauncher.Domain.ValueObjects;
+using BlockiumLauncher.Domain.Enums;
+using BlockiumLauncher.Domain.ValueObjects;
 
 namespace BlockiumLauncher.Application.UseCases.Install;
 
 public sealed class UpdateInstanceRequest
 {
-    public InstanceId InstanceId { get; }
-    public bool ForceMetadataRefresh { get; }
-
-    public UpdateInstanceRequest(InstanceId InstanceId, bool ForceMetadataRefresh = false)
-    {
-        this.InstanceId = InstanceId;
-        this.ForceMetadataRefresh = ForceMetadataRefresh;
-    }
+    public InstanceId InstanceId { get; init; } = default!;
+    public VersionId TargetGameVersion { get; init; }
+    public LoaderType TargetLoaderType { get; init; }
+    public VersionId? TargetLoaderVersion { get; init; }
 }
