@@ -15,4 +15,7 @@ public static class LaunchErrors
     public static readonly Error AssetIndexMissing = new("Launch.AssetIndexMissing", "The asset index identifier is required when assets directory is provided.");
     public static readonly Error ClasspathMissing = new("Launch.ClasspathMissing", "At least one classpath entry is required.");
     public static readonly Error ClasspathEntryMissing = new("Launch.ClasspathEntryMissing", "A classpath entry does not exist.");
+    public static readonly Error ProcessStartFailed = new("Launch.ProcessStartFailed", "The launch process could not be started.");
+    public static readonly Error LaunchSessionNotFound = new("Launch.LaunchSessionNotFound", "The requested launch session was not found.");
+    public static readonly Error StopFailed = new("Launch.StopFailed", "The running launch could not be stopped.");
 }

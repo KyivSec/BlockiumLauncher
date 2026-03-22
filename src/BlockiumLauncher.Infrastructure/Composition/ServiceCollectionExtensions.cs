@@ -1,4 +1,5 @@
 using BlockiumLauncher.Application.Abstractions.Auth;
+using BlockiumLauncher.Application.Abstractions.Launch;
 using BlockiumLauncher.Application.Abstractions.Repositories;
 using BlockiumLauncher.Application.Abstractions.Services;
 using BlockiumLauncher.Application.UseCases.Accounts;
@@ -8,6 +9,7 @@ using BlockiumLauncher.Application.UseCases.Launch;
 using BlockiumLauncher.Infrastructure.Auth;
 using BlockiumLauncher.Infrastructure.Downloads;
 using BlockiumLauncher.Infrastructure.Java;
+using BlockiumLauncher.Infrastructure.Launch;
 using BlockiumLauncher.Infrastructure.Metadata;
 using BlockiumLauncher.Infrastructure.Metadata.Clients;
 using BlockiumLauncher.Infrastructure.Persistence.Repositories;
@@ -52,6 +54,7 @@ public static class ServiceCollectionExtensions
         Services.AddSingleton<IAccountRepository, JsonAccountRepository>();
         Services.AddSingleton<BlockiumLauncher.Application.Abstractions.Security.ITokenStore, BlockiumLauncher.Infrastructure.Security.WindowsProtectedTokenStore>();
         Services.AddSingleton<IMicrosoftAuthProvider, PlaceholderMicrosoftAuthProvider>();
+        Services.AddSingleton<ILaunchProcessRunner, LaunchProcessRunner>();
 
         Services.AddTransient<InstallPlanBuilder>();
         Services.AddTransient<InstallInstanceUseCase>();
@@ -60,6 +63,9 @@ public static class ServiceCollectionExtensions
         Services.AddTransient<RepairInstanceUseCase>();
         Services.AddTransient<BuildUpdatePlanUseCase>();
         Services.AddTransient<BuildLaunchPlanUseCase>();
+        Services.AddTransient<LaunchInstanceUseCase>();
+        Services.AddTransient<GetLaunchStatusUseCase>();
+        Services.AddTransient<StopLaunchUseCase>();
 
         Services.AddTransient<AddAccountUseCase>();
         Services.AddTransient<ListAccountsUseCase>();
