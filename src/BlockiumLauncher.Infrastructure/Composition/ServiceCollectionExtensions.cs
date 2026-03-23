@@ -41,6 +41,7 @@ public static class ServiceCollectionExtensions
 
         Services.AddSingleton(JsonFileStore => new LauncherPaths(LauncherPaths.CreateDefault().RootDirectory));
         Services.AddSingleton<ILauncherPaths>(Provider => Provider.GetRequiredService<LauncherPaths>());
+  Services.AddSingleton<ILauncherDataMigrationService, LauncherDataMigrationService>();
   Services.AddSingleton<ISharedContentLayout, SharedContentLayout>();
         Services.AddSingleton<JsonFileStore>();
 
@@ -71,6 +72,8 @@ public static class ServiceCollectionExtensions
         Services.AddTransient<BlockiumLauncher.Application.Abstractions.Storage.IFileTransaction, BlockiumLauncher.Infrastructure.Storage.FileTransaction>();
         Services.AddTransient<LegacyLoaderRuntimePreparer>();
   Services.AddTransient<ILoaderRuntimePreparer, LegacyLoaderRuntimePreparer>();
+  Services.AddTransient<IFabricInstallOrchestrator, FabricInstallOrchestrator>();
+  Services.AddTransient<ILoaderRuntimePreparer, FabricRuntimePreparer>();
   Services.AddTransient<INeoForgeInstallOrchestrator, NeoForgeInstallOrchestrator>();
   Services.AddTransient<ILoaderRuntimePreparer, NeoForgeRuntimePreparer>();
   Services.AddTransient<BlockiumLauncher.Application.Abstractions.Storage.IInstanceContentInstaller, BlockiumLauncher.Infrastructure.Storage.InstanceContentInstaller>();

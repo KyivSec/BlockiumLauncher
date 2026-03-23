@@ -53,7 +53,7 @@ public sealed class LegacyLoaderRuntimePreparer : ILoaderRuntimePreparer
 
     public bool CanPrepare(LoaderType loaderType)
 {
- return loaderType is LoaderType.Vanilla or LoaderType.Fabric;
+ return loaderType == LoaderType.Vanilla;
 }
 
 public async Task<Result<string>> PrepareAsync(

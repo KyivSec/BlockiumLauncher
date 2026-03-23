@@ -8,6 +8,7 @@ using BlockiumLauncher.Contracts.Launch;
 using BlockiumLauncher.Domain.Enums;
 using BlockiumLauncher.Domain.ValueObjects;
 using BlockiumLauncher.Infrastructure.Composition;
+using BlockiumLauncher.Infrastructure.Persistence.Paths;
 using BlockiumLauncher.Shared.Errors;
 using BlockiumLauncher.Shared.Results;
 using Microsoft.Extensions.DependencyInjection;

@@ -544,7 +544,20 @@ public sealed class BuildLaunchPlanUseCase
         return string.Empty;
     }
 
-        private static IEnumerable<string> ResolveRuntimeArguments(
+    
+    private static string NormalizeJvmArgument(string value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return value;
+        }
+
+        return System.Text.RegularExpressions.Regex.Replace(
+            value,
+            @"^(-D[^=\s]+)=\s+(.+?)\s*$",
+            "$1=$2");
+    }
+    private static IEnumerable<string> ResolveRuntimeArguments(
         IEnumerable<string>? SourceArguments,
         IReadOnlyDictionary<string, string> TokenMap)
     {
@@ -560,7 +573,7 @@ public sealed class BuildLaunchPlanUseCase
                 continue;
             }
 
-            var Expanded = ExpandTokens(Arg, TokenMap).Trim();
+            var Expanded = NormalizeJvmArgument(ExpandTokens(Arg, TokenMap)).Trim();
             if (Expanded.Length == 0)
             {
                 continue;
