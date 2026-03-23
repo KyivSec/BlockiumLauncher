@@ -8,8 +8,8 @@ using System.Threading;
 using System.Threading.Tasks;
 using BlockiumLauncher.Application.Abstractions.Services;
 using BlockiumLauncher.Domain.Enums;
-using BlockiumLauncher.Shared.Results;
 using BlockiumLauncher.Domain.ValueObjects;
+using BlockiumLauncher.Shared.Results;
 
 namespace BlockiumLauncher.Application.UseCases.Install;
 
@@ -120,14 +120,12 @@ public sealed class InstallPlanBuilder
         }
 
         var SafeName = SanitizeInstanceDirectoryName(Request.InstanceName);
-        var RootDirectory = Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
-            "BlockiumLauncher",
-            "instances");
+        var RootDirectory = LauncherRootHelper.GetDefaultLauncherRoot();
+        var InstancesDirectory = Path.Combine(RootDirectory, "instances");
 
-        Directory.CreateDirectory(RootDirectory);
+        Directory.CreateDirectory(InstancesDirectory);
 
-        return Path.GetFullPath(Path.Combine(RootDirectory, SafeName));
+        return Path.GetFullPath(Path.Combine(InstancesDirectory, SafeName));
     }
 
     private static string SanitizeInstanceDirectoryName(string Value)
@@ -312,29 +310,6 @@ public sealed class InstallPlanBuilder
         return string.Equals(VersionIdValue, GameVersion, StringComparison.OrdinalIgnoreCase);
     }
 
-    private static bool MatchesLoaderVersion(object? Value, LoaderType LoaderType, string GameVersion, string LoaderVersion)
-    {
-        if (Value is null)
-        {
-            return false;
-        }
-
-        var Type = Value.GetType();
-
-        var LoaderTypeValue = Type.GetProperty("LoaderType", BindingFlags.Instance | BindingFlags.Public | BindingFlags.IgnoreCase)?.GetValue(Value)?.ToString();
-        var GameVersionValue = Type.GetProperty("GameVersion", BindingFlags.Instance | BindingFlags.Public | BindingFlags.IgnoreCase)?.GetValue(Value)?.ToString();
-        var LoaderVersionValue = Type.GetProperty("LoaderVersion", BindingFlags.Instance | BindingFlags.Public | BindingFlags.IgnoreCase)?.GetValue(Value)?.ToString();
-
-        if (!string.IsNullOrWhiteSpace(LoaderTypeValue) &&
-            !string.Equals(LoaderTypeValue, LoaderType.ToString(), StringComparison.OrdinalIgnoreCase))
-        {
-            return false;
-        }
-
-        return string.Equals(GameVersionValue, GameVersion, StringComparison.OrdinalIgnoreCase) &&
-               string.Equals(LoaderVersionValue, LoaderVersion, StringComparison.OrdinalIgnoreCase);
-    }
-
     private static VersionId CreateVersionId(string Value)
     {
         var Type = typeof(VersionId);
@@ -358,5 +333,33 @@ public sealed class InstallPlanBuilder
         }
 
         throw new InvalidOperationException("Could not create VersionId from string.");
+    }
+
+    private static class LauncherRootHelper
+    {
+        public static string GetDefaultLauncherRoot()
+        {
+            if (OperatingSystem.IsWindows())
+            {
+                return Path.Combine(
+                    Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                    "BlockiumLauncher");
+            }
+
+            if (OperatingSystem.IsMacOS())
+            {
+                var Home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+                return Path.Combine(Home, "Library", "Application Support", "BlockiumLauncher");
+            }
+
+            var XdgDataHome = Environment.GetEnvironmentVariable("XDG_DATA_HOME");
+            if (!string.IsNullOrWhiteSpace(XdgDataHome))
+            {
+                return Path.Combine(XdgDataHome, "BlockiumLauncher");
+            }
+
+            var UserHome = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+            return Path.Combine(UserHome, ".local", "share", "BlockiumLauncher");
+        }
     }
 }

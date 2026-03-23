@@ -1,8 +1,10 @@
 using System.IO.Compression;
+using System.Formats.Tar;
 using System.Runtime.InteropServices;
 using System.Text.RegularExpressions;
 using BlockiumLauncher.Application.Abstractions.Diagnostics;
 using BlockiumLauncher.Application.Abstractions.Services;
+using BlockiumLauncher.Infrastructure.Persistence.Paths;
 using BlockiumLauncher.Shared.Errors;
 using BlockiumLauncher.Shared.Results;
 
@@ -10,195 +12,209 @@ namespace BlockiumLauncher.Infrastructure.Java;
 
 public sealed class ManagedJavaRuntimeResolver : IJavaRuntimeResolver
 {
-    private readonly IJavaDiscoveryService JavaDiscoveryService;
-    private readonly IJavaValidationService JavaValidationService;
     private readonly IStructuredLogger Logger;
     private readonly IOperationContextFactory OperationContextFactory;
+    private readonly LauncherPaths LauncherPaths;
 
     public ManagedJavaRuntimeResolver(
-        IJavaDiscoveryService JavaDiscoveryService,
-        IJavaValidationService JavaValidationService,
         IStructuredLogger Logger,
-        IOperationContextFactory OperationContextFactory)
+        IOperationContextFactory OperationContextFactory,
+        ILauncherPaths LauncherPaths)
     {
-        this.JavaDiscoveryService = JavaDiscoveryService ?? throw new ArgumentNullException(nameof(JavaDiscoveryService));
-        this.JavaValidationService = JavaValidationService ?? throw new ArgumentNullException(nameof(JavaValidationService));
         this.Logger = Logger ?? throw new ArgumentNullException(nameof(Logger));
         this.OperationContextFactory = OperationContextFactory ?? throw new ArgumentNullException(nameof(OperationContextFactory));
+        this.LauncherPaths = LauncherPaths as LauncherPaths ?? throw new ArgumentNullException(nameof(LauncherPaths));
     }
 
     public async Task<Result<string>> ResolveExecutablePathAsync(string MinecraftVersion, CancellationToken CancellationToken)
     {
         var Context = OperationContextFactory.Create("ResolveJavaRuntime");
         var RequiredMajor = GetRequiredJavaMajor(MinecraftVersion);
+        var RuntimeKey = RequiredMajor.ToString();
+        var RuntimeDirectory = GetManagedRuntimeDirectory(RuntimeKey);
 
-        Logger.Info(Context, nameof(ManagedJavaRuntimeResolver), "JavaResolveStarted", "Resolving Java runtime.", new
+        Logger.Info(Context, nameof(ManagedJavaRuntimeResolver), "JavaResolveStarted", "Resolving managed Java runtime.", new
         {
             MinecraftVersion,
-            RequiredMajor
+            RequiredMajor,
+            RuntimeDirectory
         });
 
-        var DiscoverResult = await JavaDiscoveryService.DiscoverAsync(false, CancellationToken).ConfigureAwait(false);
-        if (DiscoverResult.IsSuccess)
+        var ExistingExecutable = FindManagedJavaExecutable(RuntimeDirectory);
+        if (!string.IsNullOrWhiteSpace(ExistingExecutable))
         {
-            var Candidate = DiscoverResult.Value
-                .Where(Item => Item.IsValid)
-                .Where(Item => GetJavaMajor(Item.Version) >= RequiredMajor)
-                .OrderBy(Item => GetJavaMajor(Item.Version))
-                .ThenBy(Item => Item.ExecutablePath, StringComparer.OrdinalIgnoreCase)
-                .FirstOrDefault();
-
-            if (Candidate is not null)
+            Logger.Info(Context, nameof(ManagedJavaRuntimeResolver), "JavaResolvedManagedExisting", "Using existing launcher-managed Java.", new
             {
-                Logger.Info(Context, nameof(ManagedJavaRuntimeResolver), "JavaResolvedLocal", "Resolved local Java installation.", new
-                {
-                    Candidate.ExecutablePath,
-                    Candidate.Version,
-                    RequiredMajor
-                });
-
-                return Result<string>.Success(Path.GetFullPath(Candidate.ExecutablePath));
-            }
-        }
-
-        if (!OperatingSystem.IsWindows())
-        {
-            Logger.Warning(Context, nameof(ManagedJavaRuntimeResolver), "JavaManagedUnsupportedOs", "Managed Java download is currently implemented for Windows only.", new
-            {
+                ExistingExecutable,
                 RequiredMajor
             });
 
-            return Result<string>.Failure(new Error(
-                "Java.ResolveFailed",
-                "Could not find a suitable local Java installation and managed Java download is not implemented for this operating system."));
+            return Result<string>.Success(Path.GetFullPath(ExistingExecutable));
         }
 
-        var ManagedResult = await EnsureManagedJavaAsync(RequiredMajor, Context, CancellationToken).ConfigureAwait(false);
-        if (ManagedResult.IsFailure)
+        var DownloadResult = await DownloadManagedJavaAsync(RuntimeDirectory, RequiredMajor, Context, CancellationToken).ConfigureAwait(false);
+        if (DownloadResult.IsFailure)
         {
-            return ManagedResult;
+            return DownloadResult;
         }
 
-        Logger.Info(Context, nameof(ManagedJavaRuntimeResolver), "JavaResolvedManaged", "Resolved managed Java runtime.", new
-        {
-            ExecutablePath = ManagedResult.Value,
-            RequiredMajor
-        });
-
-        return ManagedResult;
+        return DownloadResult;
     }
 
-    private async Task<Result<string>> EnsureManagedJavaAsync(
+    private async Task<Result<string>> DownloadManagedJavaAsync(
+        string RuntimeDirectory,
         int RequiredMajor,
         OperationContext Context,
         CancellationToken CancellationToken)
     {
-        var RuntimeRoot = Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
-            "BlockiumLauncher",
-            "runtimes",
-            "java",
-            "temurin-" + RequiredMajor);
-
-        var ExistingExecutable = FindJavaExecutable(RuntimeRoot);
-        if (!string.IsNullOrWhiteSpace(ExistingExecutable))
+        var ParentDirectory = Path.GetDirectoryName(RuntimeDirectory);
+        if (!string.IsNullOrWhiteSpace(ParentDirectory))
         {
-            var ExistingValidation = await JavaValidationService.ValidateExecutableAsync(ExistingExecutable, CancellationToken).ConfigureAwait(false);
-            if (ExistingValidation.IsSuccess && GetJavaMajor(ExistingValidation.Value.Version) >= RequiredMajor)
-            {
-                return Result<string>.Success(Path.GetFullPath(ExistingExecutable));
-            }
+            Directory.CreateDirectory(ParentDirectory);
         }
 
-        Directory.CreateDirectory(Path.GetDirectoryName(RuntimeRoot)!);
-
-        var TempRoot = RuntimeRoot + ".tmp";
-        var ArchivePath = TempRoot + ".zip";
-
-        if (Directory.Exists(TempRoot))
+        var TempDirectory = RuntimeDirectory + ".tmp";
+        if (Directory.Exists(TempDirectory))
         {
-            Directory.Delete(TempRoot, true);
+            Directory.Delete(TempDirectory, true);
         }
 
-        if (File.Exists(ArchivePath))
-        {
-            File.Delete(ArchivePath);
-        }
-
-        Directory.CreateDirectory(TempRoot);
+        Directory.CreateDirectory(TempDirectory);
 
         var DownloadUrl = BuildAdoptiumBinaryUrl(RequiredMajor);
+        var ArchiveExtension = OperatingSystem.IsWindows() ? ".zip" : ".tar.gz";
+        var ArchivePath = TempDirectory + ArchiveExtension;
 
-        Logger.Info(Context, nameof(ManagedJavaRuntimeResolver), "JavaManagedDownloadStarted", "Downloading managed Java runtime.", new
+        Logger.Info(Context, nameof(ManagedJavaRuntimeResolver), "JavaDownloadStarted", "Downloading managed Java runtime.", new
         {
             DownloadUrl,
-            RuntimeRoot,
+            ArchivePath,
             RequiredMajor
         });
 
-        using var HttpClient = new HttpClient();
-        using var Response = await HttpClient.GetAsync(DownloadUrl, HttpCompletionOption.ResponseHeadersRead, CancellationToken).ConfigureAwait(false);
-        Response.EnsureSuccessStatusCode();
-
-        await using (var Input = await Response.Content.ReadAsStreamAsync(CancellationToken).ConfigureAwait(false))
-        await using (var Output = File.Create(ArchivePath))
+        try
         {
-            await Input.CopyToAsync(Output, CancellationToken).ConfigureAwait(false);
+            using var HttpClient = new HttpClient();
+            using var Response = await HttpClient.GetAsync(DownloadUrl, HttpCompletionOption.ResponseHeadersRead, CancellationToken).ConfigureAwait(false);
+            Response.EnsureSuccessStatusCode();
+
+            await using (var Input = await Response.Content.ReadAsStreamAsync(CancellationToken).ConfigureAwait(false))
+            await using (var Output = File.Create(ArchivePath))
+            {
+                await Input.CopyToAsync(Output, CancellationToken).ConfigureAwait(false);
+            }
+
+            if (OperatingSystem.IsWindows())
+            {
+                ZipFile.ExtractToDirectory(ArchivePath, TempDirectory, true);
+            }
+            else
+            {
+                await using var FileStream = File.OpenRead(ArchivePath);
+                await using var GzipStream = new GZipStream(FileStream, CompressionMode.Decompress);
+                TarFile.ExtractToDirectory(GzipStream, TempDirectory, overwriteFiles: true);
+            }
+
+            if (Directory.Exists(RuntimeDirectory))
+            {
+                Directory.Delete(RuntimeDirectory, true);
+            }
+
+            Directory.Move(TempDirectory, RuntimeDirectory);
+
+            if (File.Exists(ArchivePath))
+            {
+                File.Delete(ArchivePath);
+            }
+
+            var ExecutablePath = FindManagedJavaExecutable(RuntimeDirectory);
+            if (string.IsNullOrWhiteSpace(ExecutablePath))
+            {
+                return Result<string>.Failure(new Error(
+                    "Java.ResolveFailed",
+                    "Managed Java was downloaded, but no Java executable was found in the launcher runtime folder."));
+            }
+
+            Logger.Info(Context, nameof(ManagedJavaRuntimeResolver), "JavaDownloadCompleted", "Managed Java runtime downloaded successfully.", new
+            {
+                ExecutablePath,
+                RequiredMajor
+            });
+
+            return Result<string>.Success(Path.GetFullPath(ExecutablePath));
         }
-
-        ZipFile.ExtractToDirectory(ArchivePath, TempRoot, true);
-
-        if (Directory.Exists(RuntimeRoot))
+        catch (Exception Exception)
         {
-            Directory.Delete(RuntimeRoot, true);
-        }
+            Logger.Error(Context, nameof(ManagedJavaRuntimeResolver), "JavaDownloadFailed", "Managed Java download failed.", new
+            {
+                RuntimeDirectory,
+                RequiredMajor
+            }, Exception);
 
-        Directory.Move(TempRoot, RuntimeRoot);
-        File.Delete(ArchivePath);
-
-        var ExecutablePath = FindJavaExecutable(RuntimeRoot);
-        if (string.IsNullOrWhiteSpace(ExecutablePath))
-        {
             return Result<string>.Failure(new Error(
                 "Java.ResolveFailed",
-                "Managed Java download completed, but no Java executable was found."));
+                "Failed to download a managed Java runtime for the requested Minecraft version."));
         }
+    }
 
-        var ValidationResult = await JavaValidationService.ValidateExecutableAsync(ExecutablePath, CancellationToken).ConfigureAwait(false);
-        if (ValidationResult.IsFailure || GetJavaMajor(ValidationResult.Value.Version) < RequiredMajor)
+    private string GetManagedRuntimeDirectory(string RuntimeKey)
+    {
+        var CandidateMethod = LauncherPaths.GetType().GetMethod("GetManagedJavaDirectory");
+        if (CandidateMethod is not null)
         {
-            return Result<string>.Failure(new Error(
-                "Java.ResolveFailed",
-                "Managed Java download completed, but the runtime is not valid for the requested Minecraft version."));
+            var Value = CandidateMethod.Invoke(LauncherPaths, new object[] { RuntimeKey }) as string;
+            if (!string.IsNullOrWhiteSpace(Value))
+            {
+                return Value!;
+            }
         }
 
-        return Result<string>.Success(Path.GetFullPath(ExecutablePath));
+        return Path.Combine(LauncherPaths.RootDirectory, "runtimes", "java", RuntimeKey);
     }
 
     private static string BuildAdoptiumBinaryUrl(int FeatureVersion)
     {
-        var Os = "windows";
-        var Arch = RuntimeInformation.OSArchitecture == Architecture.Arm64 ? "aarch64" : "x64";
-        return $"https://api.adoptium.net/v3/binary/latest/{FeatureVersion}/ga/{Os}/{Arch}/jre/hotspot/normal/eclipse?project=jdk";
+        var Os = OperatingSystem.IsWindows()
+            ? "windows"
+            : OperatingSystem.IsMacOS()
+                ? "mac"
+                : "linux";
+
+        var Arch = RuntimeInformation.OSArchitecture switch
+        {
+            Architecture.Arm64 => "aarch64",
+            Architecture.X86 => "x32",
+            _ => "x64"
+        };
+
+        var ImageType = "jre";
+        var JvmImpl = "hotspot";
+        var HeapSize = "normal";
+        var Vendor = "eclipse";
+
+        return $"https://api.adoptium.net/v3/binary/latest/{FeatureVersion}/ga/{Os}/{Arch}/{ImageType}/{JvmImpl}/{HeapSize}/{Vendor}";
     }
 
-    private static string? FindJavaExecutable(string RootDirectory)
+    private static string? FindManagedJavaExecutable(string RootDirectory)
     {
         if (!Directory.Exists(RootDirectory))
         {
             return null;
         }
 
-        var PreferredName = OperatingSystem.IsWindows() ? "javaw.exe" : "java";
-        var FallbackName = OperatingSystem.IsWindows() ? "java.exe" : "java";
-
-        var Preferred = Directory.EnumerateFiles(RootDirectory, PreferredName, SearchOption.AllDirectories).FirstOrDefault();
-        if (!string.IsNullOrWhiteSpace(Preferred))
+        if (OperatingSystem.IsWindows())
         {
-            return Preferred;
+            var Javaw = Directory.EnumerateFiles(RootDirectory, "javaw.exe", SearchOption.AllDirectories).FirstOrDefault();
+            if (!string.IsNullOrWhiteSpace(Javaw))
+            {
+                return Javaw;
+            }
+
+            return Directory.EnumerateFiles(RootDirectory, "java.exe", SearchOption.AllDirectories).FirstOrDefault();
         }
 
-        return Directory.EnumerateFiles(RootDirectory, FallbackName, SearchOption.AllDirectories).FirstOrDefault();
+        return Directory.EnumerateFiles(RootDirectory, "java", SearchOption.AllDirectories)
+            .FirstOrDefault(PathValue => Path.GetFileName(PathValue).Equals("java", StringComparison.Ordinal));
     }
 
     private static int GetRequiredJavaMajor(string MinecraftVersion)
@@ -224,27 +240,5 @@ public sealed class ManagedJavaRuntimeResolver : IJavaRuntimeResolver
         }
 
         return 8;
-    }
-
-    private static int GetJavaMajor(string VersionText)
-    {
-        if (string.IsNullOrWhiteSpace(VersionText))
-        {
-            return 0;
-        }
-
-        var Match = Regex.Match(VersionText, @"(?<!\d)(\d+)(?:\.(\d+))?");
-        if (!Match.Success)
-        {
-            return 0;
-        }
-
-        var First = int.Parse(Match.Groups[1].Value);
-        if (First == 1 && Match.Groups[2].Success)
-        {
-            return int.Parse(Match.Groups[2].Value);
-        }
-
-        return First;
     }
 }

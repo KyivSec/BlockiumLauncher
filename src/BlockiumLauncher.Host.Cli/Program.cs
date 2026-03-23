@@ -1,4 +1,5 @@
 using System.Text.Json;
+using BlockiumLauncher.Application.Abstractions.Repositories;
 using BlockiumLauncher.Application.Abstractions.Services;
 using BlockiumLauncher.Application.UseCases.Accounts;
 using BlockiumLauncher.Application.UseCases.Install;
@@ -81,6 +82,11 @@ internal static class Program
         if (args.Length >= 2 && Is(args[0], "instances") && Is(args[1], "repair"))
         {
             return await HandleInstancesRepairAsync(serviceProvider, args.Skip(2).ToArray(), outputJson).ConfigureAwait(false);
+        }
+
+        if (args.Length >= 2 && Is(args[0], "instances") && Is(args[1], "start"))
+        {
+            return await HandleInstancesStartAsync(serviceProvider, args.Skip(2).ToArray(), outputJson).ConfigureAwait(false);
         }
 
         if (args.Length >= 2 && Is(args[0], "launch") && Is(args[1], "plan"))
@@ -443,6 +449,82 @@ internal static class Program
         return CliExitCodes.Success;
     }
 
+    private static async Task<int> HandleInstancesStartAsync(IServiceProvider serviceProvider, string[] args, bool outputJson)
+    {
+        var instanceIdText = GetOptionalOption(args, "--instance-id");
+        var instanceName = GetOptionalOption(args, "--name");
+        var accountIdText = GetOptionalOption(args, "--account-id");
+
+        if (string.IsNullOrWhiteSpace(instanceIdText) && string.IsNullOrWhiteSpace(instanceName))
+        {
+            WriteFailure("Cli.InvalidArguments", "Required: --instance-id <id> or --name <instance-name>.", outputJson);
+            return CliExitCodes.InvalidArguments;
+        }
+
+        var instanceRepository = serviceProvider.GetRequiredService<IInstanceRepository>();
+        var javaRuntimeResolver = serviceProvider.GetRequiredService<IJavaRuntimeResolver>();
+
+        var instance = !string.IsNullOrWhiteSpace(instanceIdText)
+            ? await instanceRepository.GetByIdAsync(new InstanceId(instanceIdText), CancellationToken.None).ConfigureAwait(false)
+            : await instanceRepository.GetByNameAsync(instanceName!, CancellationToken.None).ConfigureAwait(false);
+
+        if (instance is null)
+        {
+            WriteFailure("Launch.InstanceNotFound", "The requested instance was not found.", outputJson);
+            return CliExitCodes.OperationFailed;
+        }
+
+        var javaResult = await javaRuntimeResolver.ResolveExecutablePathAsync(instance.GameVersion.ToString(), CancellationToken.None).ConfigureAwait(false);
+        if (javaResult.IsFailure)
+        {
+            WriteFailure(javaResult.Error.Code, javaResult.Error.Message, outputJson);
+            return CliExitCodes.OperationFailed;
+        }
+
+        Console.WriteLine("Launch started. Logs are being written to launcher logs.");
+
+        var useCase = serviceProvider.GetRequiredService<LaunchInstanceUseCase>();
+        var result = await useCase.ExecuteAsync(new LaunchInstanceRequest
+        {
+            InstanceId = instance.InstanceId,
+            AccountId = string.IsNullOrWhiteSpace(accountIdText) ? null : new AccountId(accountIdText),
+            JavaExecutablePath = javaResult.Value,
+            MainClass = string.Empty,
+            AssetsDirectory = null,
+            AssetIndexId = null,
+            ClasspathEntries = []
+        }).ConfigureAwait(false);
+
+        if (result.IsFailure)
+        {
+            WriteFailure(result.Error.Code, result.Error.Message, outputJson);
+            return CliExitCodes.OperationFailed;
+        }
+
+        var payload = new
+        {
+            result.Value.LaunchId,
+            result.Value.InstanceId,
+            result.Value.ProcessId,
+            result.Value.IsRunning,
+            result.Value.HasExited,
+            result.Value.ExitCode,
+            JavaPath = javaResult.Value
+        };
+
+        WriteSuccess(payload, outputJson, lines =>
+        {
+            lines.Add($"LaunchId: {payload.LaunchId}");
+            lines.Add($"InstanceId: {payload.InstanceId}");
+            lines.Add($"ProcessId: {payload.ProcessId}");
+            lines.Add($"Running: {payload.IsRunning}");
+            lines.Add($"HasExited: {payload.HasExited}");
+            lines.Add($"ExitCode: {payload.ExitCode}");
+            lines.Add($"Java: {payload.JavaPath}");
+        });
+
+        return CliExitCodes.Success;
+    }
     private static async Task<int> HandleLaunchPlanAsync(IServiceProvider serviceProvider, string[] args, bool outputJson)
     {
         var buildResult = await BuildLaunchPlanAsync(serviceProvider, args).ConfigureAwait(false);
@@ -748,7 +830,7 @@ internal static class Program
     {
         var outputPath = GetOptionalOption(args, "--output");
         var dumpDirectory = Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
             "BlockiumLauncher",
             "diagnostics");
 
@@ -759,7 +841,7 @@ internal static class Program
             : Path.GetFullPath(outputPath);
 
         var logsDirectory = Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
             "BlockiumLauncher",
             "logs");
 
@@ -776,7 +858,7 @@ internal static class Program
         var payload = new
         {
             CreatedAtUtc = DateTimeOffset.UtcNow,
-            AppDataRoot = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "BlockiumLauncher"),
+            AppDataRoot = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "BlockiumLauncher"),
             LogsDirectory = logsDirectory,
             LatestLogFile = latestLogFile,
             RecentLogLines = recentLogLines
@@ -956,7 +1038,8 @@ internal static class Program
                 "accounts remove --account-id <id> [--json]",
                 "instances install --name <name> --version <version> --loader <vanilla|fabric|quilt|forge|neoforge> [--loader-version <version>] [--path <directory>] [--overwrite] [--download-runtime] [--json]",
                 "instances verify --instance-id <id> [--json]",
-                "instances repair --instance-id <id> [--json]",
+                "instances repair --instance-id <id> [--json]",                
+                "instances start --instance-id <id> | --name <instance-name> [--account-id <id>] [--json]",
                 "launch plan --instance-id <id> --java <path> [--main-class <class>] [--classpath <entry> ...] [--assets-dir <path>] [--asset-index <id>] [--account-id <id>] [--json]",
                 "launch run --instance-id <id> --java <path> [--main-class <class>] [--classpath <entry> ...] [--assets-dir <path>] [--asset-index <id>] [--account-id <id>] [--json]",
                 "launch status --launch-id <guid> [--json]",

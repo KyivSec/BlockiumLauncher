@@ -14,34 +14,41 @@ using BlockiumLauncher.Application.Abstractions.Storage;
 using BlockiumLauncher.Application.Diagnostics;
 using BlockiumLauncher.Application.UseCases.Install;
 using BlockiumLauncher.Domain.Enums;
+using BlockiumLauncher.Infrastructure.Persistence.Paths;
 using BlockiumLauncher.Shared.Results;
 
 namespace BlockiumLauncher.Infrastructure.Storage;
 
 public sealed class InstanceContentInstaller : IInstanceContentInstaller
 {
+    private const int MaxParallelLibraryDownloads = 8;
+    private const int MaxParallelAssetDownloads = 16;
     private static readonly Uri VanillaManifestUri = new("https://piston-meta.mojang.com/mc/game/version_manifest_v2.json");
 
     private readonly IStructuredLogger Logger;
     private readonly IOperationContextFactory OperationContextFactory;
     private readonly IJavaRuntimeResolver JavaRuntimeResolver;
+    private readonly LauncherPaths LauncherPaths;
 
     public InstanceContentInstaller()
         : this(
             NullStructuredLogger.Instance,
             DefaultOperationContextFactory.Instance,
-            NoOpJavaRuntimeResolver.Instance)
+            NoOpJavaRuntimeResolver.Instance,
+            LauncherPaths.CreateDefault())
     {
     }
 
     public InstanceContentInstaller(
         IStructuredLogger Logger,
         IOperationContextFactory OperationContextFactory,
-        IJavaRuntimeResolver JavaRuntimeResolver)
+        IJavaRuntimeResolver JavaRuntimeResolver,
+        ILauncherPaths LauncherPaths)
     {
         this.Logger = Logger ?? throw new ArgumentNullException(nameof(Logger));
         this.OperationContextFactory = OperationContextFactory ?? throw new ArgumentNullException(nameof(OperationContextFactory));
         this.JavaRuntimeResolver = JavaRuntimeResolver ?? throw new ArgumentNullException(nameof(JavaRuntimeResolver));
+        this.LauncherPaths = LauncherPaths as LauncherPaths ?? throw new ArgumentNullException(nameof(LauncherPaths));
     }
 
     public async Task<Result<string>> PrepareAsync(
@@ -75,13 +82,6 @@ public sealed class InstanceContentInstaller : IInstanceContentInstaller
             foreach (var Step in Plan.Steps)
             {
                 CancellationToken.ThrowIfCancellationRequested();
-
-                Logger.Info(Context, nameof(InstanceContentInstaller), "PlanStep", "Executing install plan step.", new
-                {
-                    Kind = Step.Kind.ToString(),
-                    Step.Destination,
-                    Step.Description
-                });
 
                 if (Step.Kind == InstallPlanStepKind.CreateDirectory)
                 {
@@ -127,7 +127,6 @@ public sealed class InstanceContentInstaller : IInstanceContentInstaller
                     case LoaderType.Fabric:
                         if (string.IsNullOrWhiteSpace(Plan.LoaderVersion))
                         {
-                            Logger.Warning(Context, nameof(InstanceContentInstaller), "FabricLoaderVersionMissing", "Fabric runtime download requires a loader version.");
                             return Result<string>.Failure(InstallErrors.InvalidRequest);
                         }
 
@@ -138,7 +137,6 @@ public sealed class InstanceContentInstaller : IInstanceContentInstaller
                     case LoaderType.NeoForge:
                         if (string.IsNullOrWhiteSpace(Plan.LoaderVersion))
                         {
-                            Logger.Warning(Context, nameof(InstanceContentInstaller), "NeoForgeLoaderVersionMissing", "NeoForge runtime download requires a loader version.");
                             return Result<string>.Failure(InstallErrors.InvalidRequest);
                         }
 
@@ -147,10 +145,6 @@ public sealed class InstanceContentInstaller : IInstanceContentInstaller
                         break;
 
                     default:
-                        Logger.Warning(Context, nameof(InstanceContentInstaller), "RuntimeDownloadInvalid", "Runtime download is not implemented for this loader yet.", new
-                        {
-                            LoaderType = Plan.LoaderType.ToString()
-                        });
                         return Result<string>.Failure(InstallErrors.InvalidRequest);
                 }
             }
@@ -163,18 +157,13 @@ public sealed class InstanceContentInstaller : IInstanceContentInstaller
                 LoaderType = Plan.LoaderType.ToString(),
                 Plan.LoaderVersion,
                 Plan.DownloadRuntime,
-                InstalledBy = "BlockiumLauncher.Stage16C"
+                InstalledBy = "BlockiumLauncher.SharedStorage"
             };
 
             await File.WriteAllTextAsync(
                 MarkerPath,
                 JsonSerializer.Serialize(MarkerPayload, new JsonSerializerOptions { WriteIndented = true }),
                 CancellationToken).ConfigureAwait(false);
-
-            Logger.Info(Context, nameof(InstanceContentInstaller), "PrepareCompleted", "Instance content prepared successfully.", new
-            {
-                RootPath
-            });
 
             return Result<string>.Success(RootPath);
         }
@@ -192,6 +181,230 @@ public sealed class InstanceContentInstaller : IInstanceContentInstaller
         }
     }
 
+    private async Task DownloadVanillaRuntimeAsync(
+        InstallPlan Plan,
+        string RootPath,
+        OperationContext Context,
+        CancellationToken CancellationToken)
+    {
+        using var HttpClient = new HttpClient();
+
+        var VersionDirectory = LauncherPaths.GetSharedVersionDirectory(Plan.GameVersion);
+        var ClientJarPath = LauncherPaths.GetSharedClientJarPath(Plan.GameVersion);
+        var VersionJsonPath = LauncherPaths.GetSharedVersionJsonPath(Plan.GameVersion);
+        var LibrariesRoot = LauncherPaths.SharedLibrariesDirectory;
+        var AssetsRoot = LauncherPaths.SharedAssetsDirectory;
+        var AssetsIndexesRoot = LauncherPaths.SharedAssetIndexesDirectory;
+        var AssetsObjectsRoot = LauncherPaths.SharedAssetObjectsDirectory;
+        var NativesRoot = LauncherPaths.GetSharedNativesDirectory("vanilla-" + Plan.GameVersion);
+
+        Directory.CreateDirectory(VersionDirectory);
+        Directory.CreateDirectory(LibrariesRoot);
+        Directory.CreateDirectory(AssetsIndexesRoot);
+        Directory.CreateDirectory(AssetsObjectsRoot);
+        Directory.CreateDirectory(NativesRoot);
+
+        var ManifestJson = await HttpClient.GetStringAsync(VanillaManifestUri, CancellationToken).ConfigureAwait(false);
+        using var ManifestDocument = JsonDocument.Parse(ManifestJson);
+
+        var VersionNode = ManifestDocument.RootElement
+            .GetProperty("versions")
+            .EnumerateArray()
+            .FirstOrDefault(Item =>
+                string.Equals(Item.GetProperty("id").GetString(), Plan.GameVersion, StringComparison.OrdinalIgnoreCase));
+
+        var VersionUrl = VersionNode.ValueKind == JsonValueKind.Undefined
+            ? null
+            : VersionNode.GetProperty("url").GetString();
+
+        if (string.IsNullOrWhiteSpace(VersionUrl))
+        {
+            throw new InvalidOperationException("Could not resolve version metadata URL.");
+        }
+
+        var VersionJson = await HttpClient.GetStringAsync(VersionUrl, CancellationToken).ConfigureAwait(false);
+        using var VersionDocument = JsonDocument.Parse(VersionJson);
+        var Root = VersionDocument.RootElement;
+
+        await File.WriteAllTextAsync(VersionJsonPath, VersionJson, CancellationToken).ConfigureAwait(false);
+
+        var ClientDownload = Root.GetProperty("downloads").GetProperty("client");
+        var ClientUrl = ClientDownload.GetProperty("url").GetString()!;
+        var ClientSha1 = ClientDownload.TryGetProperty("sha1", out var ClientSha1Element) ? ClientSha1Element.GetString() : null;
+
+        await DownloadFileAsync(HttpClient, ClientUrl, ClientJarPath, ClientSha1, CancellationToken).ConfigureAwait(false);
+
+        var ClasspathEntries = new System.Collections.Generic.List<string>();
+
+        if (Root.TryGetProperty("libraries", out var LibrariesElement) && LibrariesElement.ValueKind == JsonValueKind.Array)
+        {
+            var DownloadedClasspathEntries = await DownloadLibrariesInParallelAsync(
+                LibrariesElement,
+                LibrariesRoot,
+                RootPath,
+                Context,
+                CancellationToken).ConfigureAwait(false);
+
+            foreach (var Entry in DownloadedClasspathEntries)
+            {
+                ClasspathEntries.Add(Entry);
+            }
+
+            var NativeArchives = Directory.Exists(LibrariesRoot)
+                ? Directory.EnumerateFiles(LibrariesRoot, "*.jar", SearchOption.AllDirectories)
+                    .Where(PathValue =>
+                        PathValue.Contains("natives", StringComparison.OrdinalIgnoreCase) ||
+                        PathValue.Contains("windows", StringComparison.OrdinalIgnoreCase) ||
+                        PathValue.Contains("linux", StringComparison.OrdinalIgnoreCase) ||
+                        PathValue.Contains("osx", StringComparison.OrdinalIgnoreCase))
+                : Enumerable.Empty<string>();
+
+            foreach (var NativeArchivePath in NativeArchives)
+            {
+                ExtractNativeArchive(NativeArchivePath, NativesRoot);
+            }
+        }
+
+        ClasspathEntries.Add(ClientJarPath);
+
+        string? AssetIndexId = null;
+        if (Root.TryGetProperty("assetIndex", out var AssetIndexElement))
+        {
+            AssetIndexId = AssetIndexElement.GetProperty("id").GetString();
+            var AssetIndexUrl = AssetIndexElement.GetProperty("url").GetString();
+
+            if (!string.IsNullOrWhiteSpace(AssetIndexId) && !string.IsNullOrWhiteSpace(AssetIndexUrl))
+            {
+                var AssetIndexPath = Path.Combine(AssetsIndexesRoot, AssetIndexId + ".json");
+                var AssetIndexSha1 = AssetIndexElement.TryGetProperty("sha1", out var AssetIndexSha1Element) ? AssetIndexSha1Element.GetString() : null;
+
+                await DownloadFileAsync(HttpClient, AssetIndexUrl, AssetIndexPath, AssetIndexSha1, CancellationToken).ConfigureAwait(false);
+
+                var AssetIndexJson = await File.ReadAllTextAsync(AssetIndexPath, CancellationToken).ConfigureAwait(false);
+                using var AssetIndexDocument = JsonDocument.Parse(AssetIndexJson);
+
+                if (AssetIndexDocument.RootElement.TryGetProperty("objects", out var ObjectsElement))
+                {
+                    await DownloadAssetsInParallelAsync(
+                        ObjectsElement,
+                        AssetsObjectsRoot,
+                        Context,
+                        CancellationToken).ConfigureAwait(false);
+                }
+            }
+        }
+
+        var MainClass = Root.TryGetProperty("mainClass", out var MainClassElement)
+            ? MainClassElement.GetString()
+            : null;
+
+        var RuntimeMetadataPath = Path.Combine(RootPath, ".blockium", "runtime.json");
+        Directory.CreateDirectory(Path.GetDirectoryName(RuntimeMetadataPath)!);
+
+        var RuntimeMetadata = new RuntimeMetadataFile
+        {
+            Version = Plan.GameVersion,
+            MainClass = MainClass ?? string.Empty,
+            ClientJarPath = ClientJarPath,
+            ClasspathEntries = ClasspathEntries.ToArray(),
+            AssetsDirectory = AssetsRoot,
+            AssetIndexId = AssetIndexId ?? string.Empty,
+            NativesDirectory = NativesRoot,
+            ExtraJvmArguments = [],
+            ExtraGameArguments = []
+        };
+
+        await WriteRuntimeMetadataAsync(RuntimeMetadataPath, RuntimeMetadata, CancellationToken).ConfigureAwait(false);
+    }
+
+    private async Task DownloadFabricRuntimeAsync(
+        InstallPlan Plan,
+        string RootPath,
+        OperationContext Context,
+        CancellationToken CancellationToken)
+    {
+        using var HttpClient = new HttpClient();
+
+        var ProfileUrl = $"https://meta.fabricmc.net/v2/versions/loader/{Plan.GameVersion}/{Plan.LoaderVersion}/profile/json";
+        var ProfileJson = await HttpClient.GetStringAsync(ProfileUrl, CancellationToken).ConfigureAwait(false);
+        using var ProfileDocument = JsonDocument.Parse(ProfileJson);
+        var Root = ProfileDocument.RootElement;
+
+        var RuntimeMetadataPath = Path.Combine(RootPath, ".blockium", "runtime.json");
+        var RuntimeMetadata = await ReadRuntimeMetadataAsync(RuntimeMetadataPath, CancellationToken).ConfigureAwait(false);
+
+        var FabricLoaderRoot = LauncherPaths.GetSharedLoaderDirectory(LoaderType.Fabric, Plan.GameVersion, Plan.LoaderVersion!);
+        var FabricLibrariesRoot = Path.Combine(FabricLoaderRoot, "libraries");
+        Directory.CreateDirectory(FabricLibrariesRoot);
+
+        var FabricLibraries = new System.Collections.Generic.List<string>();
+
+        if (Root.TryGetProperty("libraries", out var LibrariesElement) && LibrariesElement.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var Library in LibrariesElement.EnumerateArray())
+            {
+                if (!Library.TryGetProperty("name", out var NameElement) || NameElement.ValueKind != JsonValueKind.String)
+                {
+                    continue;
+                }
+
+                var Coordinates = NameElement.GetString();
+                if (string.IsNullOrWhiteSpace(Coordinates))
+                {
+                    continue;
+                }
+
+                var RepositoryUrl = Library.TryGetProperty("url", out var UrlElement) && UrlElement.ValueKind == JsonValueKind.String
+                    ? UrlElement.GetString()
+                    : "https://maven.fabricmc.net/";
+
+                if (string.IsNullOrWhiteSpace(RepositoryUrl))
+                {
+                    RepositoryUrl = "https://maven.fabricmc.net/";
+                }
+
+                var RelativeArtifactPath = BuildMavenArtifactPath(Coordinates);
+                var DownloadUrl = CombineMavenUrl(RepositoryUrl, RelativeArtifactPath);
+                var DestinationPath = Path.Combine(FabricLibrariesRoot, RelativeArtifactPath);
+
+                await DownloadFileAsync(HttpClient, DownloadUrl, DestinationPath, null, CancellationToken).ConfigureAwait(false);
+
+                FabricLibraries.Add(DestinationPath);
+            }
+        }
+
+        var MainClass = Root.TryGetProperty("mainClass", out var MainClassElement) && MainClassElement.ValueKind == JsonValueKind.String
+            ? MainClassElement.GetString()
+            : RuntimeMetadata.MainClass;
+
+        var JvmArgs = ExtractArguments(Root, "jvm");
+        var GameArgs = ExtractArguments(Root, "game");
+
+        var CombinedClasspath = new System.Collections.Generic.List<string>();
+        CombinedClasspath.AddRange(FabricLibraries);
+        foreach (var Existing in RuntimeMetadata.ClasspathEntries)
+        {
+            if (!CombinedClasspath.Contains(Existing, StringComparer.OrdinalIgnoreCase))
+            {
+                CombinedClasspath.Add(Existing);
+            }
+        }
+
+        RuntimeMetadata.MainClass = MainClass ?? RuntimeMetadata.MainClass;
+        RuntimeMetadata.ClasspathEntries = CombinedClasspath.ToArray();
+        RuntimeMetadata.ExtraJvmArguments = MergeDistinct(RuntimeMetadata.ExtraJvmArguments, JvmArgs);
+        RuntimeMetadata.ExtraGameArguments = MergeDistinct(RuntimeMetadata.ExtraGameArguments, GameArgs);
+        RuntimeMetadata.LoaderType = LoaderType.Fabric.ToString();
+        RuntimeMetadata.LoaderVersion = Plan.LoaderVersion ?? string.Empty;
+        RuntimeMetadata.LoaderProfileJsonPath = Path.Combine(FabricLoaderRoot, "fabric-profile.json");
+
+        var ProfilePath = Path.Combine(FabricLoaderRoot, "fabric-profile.json");
+        Directory.CreateDirectory(Path.GetDirectoryName(ProfilePath)!);
+        await File.WriteAllTextAsync(ProfilePath, ProfileJson, CancellationToken).ConfigureAwait(false);
+
+        await WriteRuntimeMetadataAsync(RuntimeMetadataPath, RuntimeMetadata, CancellationToken).ConfigureAwait(false);
+    }
+
     private async Task DownloadNeoForgeRuntimeAsync(
         InstallPlan Plan,
         string RootPath,
@@ -205,30 +418,18 @@ public sealed class InstanceContentInstaller : IInstanceContentInstaller
         }
 
         var JavaPath = JavaResolveResult.Value;
+        var NeoForgeRoot = LauncherPaths.GetSharedLoaderDirectory(LoaderType.NeoForge, Plan.GameVersion, Plan.LoaderVersion!);
         var InstallerUrl = $"https://maven.neoforged.net/releases/net/neoforged/neoforge/{Plan.LoaderVersion}/neoforge-{Plan.LoaderVersion}-installer.jar";
-        var InstallerPath = Path.Combine(RootPath, ".blockium", $"neoforge-{Plan.LoaderVersion}-installer.jar");
+        var InstallerPath = Path.Combine(NeoForgeRoot, $"neoforge-{Plan.LoaderVersion}-installer.jar");
         Directory.CreateDirectory(Path.GetDirectoryName(InstallerPath)!);
-
-        Logger.Info(Context, nameof(InstanceContentInstaller), "NeoForgeInstallerDownloadStarted", "Downloading NeoForge installer jar.", new
-        {
-            InstallerUrl,
-            InstallerPath,
-            JavaPath
-        });
 
         using (var HttpClient = new HttpClient())
         {
             await DownloadFileAsync(HttpClient, InstallerUrl, InstallerPath, null, CancellationToken).ConfigureAwait(false);
         }
 
-        var MinecraftRoot = Path.Combine(RootPath, ".minecraft");
+        var MinecraftRoot = Path.Combine(NeoForgeRoot, "runtime");
         Directory.CreateDirectory(MinecraftRoot);
-
-        Logger.Info(Context, nameof(InstanceContentInstaller), "NeoForgeInstallerStarted", "Running NeoForge installer.", new
-        {
-            InstallerPath,
-            WorkingDirectory = MinecraftRoot
-        });
 
         var StartInfo = new ProcessStartInfo
         {
@@ -242,7 +443,7 @@ public sealed class InstanceContentInstaller : IInstanceContentInstaller
 
         StartInfo.ArgumentList.Add("-jar");
         StartInfo.ArgumentList.Add(InstallerPath);
-        StartInfo.ArgumentList.Add("--installClient");
+        StartInfo.ArgumentList.Add("--install-client");
         StartInfo.ArgumentList.Add(".");
 
         using var Process = new Process { StartInfo = StartInfo };
@@ -253,34 +454,27 @@ public sealed class InstanceContentInstaller : IInstanceContentInstaller
 
         await Process.WaitForExitAsync(CancellationToken).ConfigureAwait(false);
 
-        var StdOut = await StdOutTask.ConfigureAwait(false);
         var StdErr = await StdErrTask.ConfigureAwait(false);
-
-        Logger.Info(Context, nameof(InstanceContentInstaller), "NeoForgeInstallerFinished", "NeoForge installer process finished.", new
-        {
-            Process.ExitCode,
-            StdOut,
-            StdErr
-        });
+        await StdOutTask.ConfigureAwait(false);
 
         if (Process.ExitCode != 0)
         {
             throw new InvalidOperationException("NeoForge installer failed: " + StdErr);
         }
 
-        await BuildNeoForgeRuntimeMetadataAsync(Plan, RootPath, Context, CancellationToken).ConfigureAwait(false);
+        await BuildNeoForgeRuntimeMetadataAsync(Plan, RootPath, MinecraftRoot, CancellationToken).ConfigureAwait(false);
     }
 
     private async Task BuildNeoForgeRuntimeMetadataAsync(
         InstallPlan Plan,
         string RootPath,
-        OperationContext Context,
+        string NeoForgeRuntimeRoot,
         CancellationToken CancellationToken)
     {
         var RuntimeMetadataPath = Path.Combine(RootPath, ".blockium", "runtime.json");
         var RuntimeMetadata = await ReadRuntimeMetadataAsync(RuntimeMetadataPath, CancellationToken).ConfigureAwait(false);
 
-        var VersionsRoot = Path.Combine(RootPath, ".minecraft", "versions");
+        var VersionsRoot = Path.Combine(NeoForgeRuntimeRoot, "versions");
         if (!Directory.Exists(VersionsRoot))
         {
             throw new InvalidOperationException("NeoForge installer did not create a versions directory.");
@@ -299,11 +493,6 @@ public sealed class InstanceContentInstaller : IInstanceContentInstaller
         {
             throw new InvalidOperationException("Could not find installed NeoForge version json.");
         }
-
-        Logger.Info(Context, nameof(InstanceContentInstaller), "NeoForgeVersionJsonResolved", "Resolved NeoForge version json.", new
-        {
-            VersionJsonPath
-        });
 
         var VersionJson = await File.ReadAllTextAsync(VersionJsonPath, CancellationToken).ConfigureAwait(false);
         using var VersionDocument = JsonDocument.Parse(VersionJson);
@@ -325,7 +514,7 @@ public sealed class InstanceContentInstaller : IInstanceContentInstaller
                 .Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
         }
 
-        var LibrariesRoot = Path.Combine(RootPath, ".minecraft", "libraries");
+        var LibrariesRoot = Path.Combine(NeoForgeRuntimeRoot, "libraries");
         var LoaderClasspath = new System.Collections.Generic.List<string>();
 
         if (Root.TryGetProperty("libraries", out var LibrariesElement) && LibrariesElement.ValueKind == JsonValueKind.Array)
@@ -354,7 +543,7 @@ public sealed class InstanceContentInstaller : IInstanceContentInstaller
                 var FullPath = Path.Combine(LibrariesRoot, RelativePath);
                 if (File.Exists(FullPath))
                 {
-                    LoaderClasspath.Add(FullPath.Replace(RootPath + Path.DirectorySeparatorChar, string.Empty, StringComparison.OrdinalIgnoreCase));
+                    LoaderClasspath.Add(FullPath);
                 }
             }
         }
@@ -362,7 +551,7 @@ public sealed class InstanceContentInstaller : IInstanceContentInstaller
         var VersionJarPath = Path.ChangeExtension(VersionJsonPath, ".jar");
         if (File.Exists(VersionJarPath))
         {
-            LoaderClasspath.Add(VersionJarPath.Replace(RootPath + Path.DirectorySeparatorChar, string.Empty, StringComparison.OrdinalIgnoreCase));
+            LoaderClasspath.Add(VersionJarPath);
         }
 
         var CombinedClasspath = new System.Collections.Generic.List<string>();
@@ -382,380 +571,12 @@ public sealed class InstanceContentInstaller : IInstanceContentInstaller
         RuntimeMetadata.ExtraGameArguments = MergeDistinct(RuntimeMetadata.ExtraGameArguments, ExtraGameArguments);
         RuntimeMetadata.LoaderType = LoaderType.NeoForge.ToString();
         RuntimeMetadata.LoaderVersion = Plan.LoaderVersion ?? string.Empty;
-        RuntimeMetadata.LoaderProfileJsonPath = Path.Combine(".blockium", "neoforge-version.json");
+        RuntimeMetadata.LoaderProfileJsonPath = Path.Combine(NeoForgeRuntimeRoot, "neoforge-version.json");
 
-        var PersistedVersionJsonPath = Path.Combine(RootPath, ".blockium", "neoforge-version.json");
+        var PersistedVersionJsonPath = Path.Combine(NeoForgeRuntimeRoot, "neoforge-version.json");
         await File.WriteAllTextAsync(PersistedVersionJsonPath, VersionJson, CancellationToken).ConfigureAwait(false);
 
         await WriteRuntimeMetadataAsync(RuntimeMetadataPath, RuntimeMetadata, CancellationToken).ConfigureAwait(false);
-
-        Logger.Info(Context, nameof(InstanceContentInstaller), "NeoForgeRuntimeMetadataUpdated", "NeoForge runtime metadata updated.", new
-        {
-            RuntimeMetadata.MainClass,
-            ClasspathCount = RuntimeMetadata.ClasspathEntries.Length,
-            JvmArgumentCount = RuntimeMetadata.ExtraJvmArguments.Length,
-            GameArgumentCount = RuntimeMetadata.ExtraGameArguments.Length
-        });
-    }
-
-    private async Task DownloadVanillaRuntimeAsync(
-        InstallPlan Plan,
-        string RootPath,
-        OperationContext Context,
-        CancellationToken CancellationToken)
-    {
-        using var HttpClient = new HttpClient();
-
-        Logger.Info(Context, nameof(InstanceContentInstaller), "ManifestDownloadStarted", "Downloading vanilla manifest.", new
-        {
-            Url = VanillaManifestUri.ToString()
-        });
-
-        var ManifestJson = await HttpClient.GetStringAsync(VanillaManifestUri, CancellationToken).ConfigureAwait(false);
-        using var ManifestDocument = JsonDocument.Parse(ManifestJson);
-
-        var VersionNode = ManifestDocument.RootElement
-            .GetProperty("versions")
-            .EnumerateArray()
-            .FirstOrDefault(Item =>
-                string.Equals(Item.GetProperty("id").GetString(), Plan.GameVersion, StringComparison.OrdinalIgnoreCase));
-
-        var VersionUrl = VersionNode.ValueKind == JsonValueKind.Undefined
-            ? null
-            : VersionNode.GetProperty("url").GetString();
-
-        if (string.IsNullOrWhiteSpace(VersionUrl))
-        {
-            throw new InvalidOperationException("Could not resolve version metadata URL.");
-        }
-
-        Logger.Info(Context, nameof(InstanceContentInstaller), "VersionMetadataDownloadStarted", "Downloading version metadata.", new
-        {
-            Plan.GameVersion,
-            VersionUrl
-        });
-
-        var VersionJson = await HttpClient.GetStringAsync(VersionUrl, CancellationToken).ConfigureAwait(false);
-        using var VersionDocument = JsonDocument.Parse(VersionJson);
-        var Root = VersionDocument.RootElement;
-
-        var MinecraftRoot = Path.Combine(RootPath, ".minecraft");
-        var VersionsRoot = Path.Combine(MinecraftRoot, "versions", Plan.GameVersion);
-        var LibrariesRoot = Path.Combine(MinecraftRoot, "libraries");
-        var AssetsRoot = Path.Combine(MinecraftRoot, "assets");
-        var AssetsIndexesRoot = Path.Combine(AssetsRoot, "indexes");
-        var AssetsObjectsRoot = Path.Combine(AssetsRoot, "objects");
-        var NativesRoot = Path.Combine(MinecraftRoot, "natives", Plan.GameVersion);
-
-        Directory.CreateDirectory(VersionsRoot);
-        Directory.CreateDirectory(LibrariesRoot);
-        Directory.CreateDirectory(AssetsIndexesRoot);
-        Directory.CreateDirectory(AssetsObjectsRoot);
-        Directory.CreateDirectory(NativesRoot);
-
-        var VersionJsonPath = Path.Combine(VersionsRoot, Plan.GameVersion + ".json");
-        await File.WriteAllTextAsync(VersionJsonPath, VersionJson, CancellationToken).ConfigureAwait(false);
-
-        var ClientDownload = Root.GetProperty("downloads").GetProperty("client");
-        var ClientUrl = ClientDownload.GetProperty("url").GetString()!;
-        var ClientSha1 = ClientDownload.TryGetProperty("sha1", out var ClientSha1Element) ? ClientSha1Element.GetString() : null;
-        var ClientJarPath = Path.Combine(VersionsRoot, Plan.GameVersion + ".jar");
-
-        Logger.Info(Context, nameof(InstanceContentInstaller), "ClientDownloadStarted", "Downloading client jar.", new
-        {
-            ClientUrl,
-            ClientJarPath
-        });
-
-        await DownloadFileAsync(HttpClient, ClientUrl, ClientJarPath, ClientSha1, CancellationToken).ConfigureAwait(false);
-
-        var ClasspathEntries = new System.Collections.Generic.List<string>();
-        var DownloadedLibraries = 0;
-
-        if (Root.TryGetProperty("libraries", out var LibrariesElement) && LibrariesElement.ValueKind == JsonValueKind.Array)
-        {
-            var Libraries = LibrariesElement.EnumerateArray().ToArray();
-
-            Logger.Info(Context, nameof(InstanceContentInstaller), "LibrariesScanStarted", "Scanning libraries from version metadata.", new
-            {
-                Count = Libraries.Length
-            });
-
-            foreach (var Library in Libraries)
-            {
-                if (!IsLibraryAllowed(Library))
-                {
-                    continue;
-                }
-
-                if (Library.TryGetProperty("downloads", out var DownloadsElement))
-                {
-                    if (DownloadsElement.TryGetProperty("artifact", out var ArtifactElement))
-                    {
-                        var PathValue = ArtifactElement.GetProperty("path").GetString();
-                        var UrlValue = ArtifactElement.GetProperty("url").GetString();
-
-                        if (!string.IsNullOrWhiteSpace(PathValue) && !string.IsNullOrWhiteSpace(UrlValue))
-                        {
-                            var DestinationPath = Path.Combine(LibrariesRoot, PathValue);
-                            var Sha1 = ArtifactElement.TryGetProperty("sha1", out var Sha1Element) ? Sha1Element.GetString() : null;
-                            await DownloadFileAsync(HttpClient, UrlValue, DestinationPath, Sha1, CancellationToken).ConfigureAwait(false);
-                            ClasspathEntries.Add(DestinationPath);
-                            DownloadedLibraries++;
-
-                            if (DownloadedLibraries % 25 == 0)
-                            {
-                                Logger.Info(Context, nameof(InstanceContentInstaller), "LibrariesProgress", "Library download progress.", new
-                                {
-                                    DownloadedLibraries
-                                });
-                            }
-                        }
-                    }
-
-                    if (DownloadsElement.TryGetProperty("classifiers", out var ClassifiersElement))
-                    {
-                        var NativeKey = GetNativeClassifierKey(Library);
-                        if (!string.IsNullOrWhiteSpace(NativeKey) &&
-                            ClassifiersElement.TryGetProperty(NativeKey, out var NativeElement))
-                        {
-                            var NativePath = NativeElement.GetProperty("path").GetString();
-                            var NativeUrl = NativeElement.GetProperty("url").GetString();
-
-                            if (!string.IsNullOrWhiteSpace(NativePath) && !string.IsNullOrWhiteSpace(NativeUrl))
-                            {
-                                var NativeArchivePath = Path.Combine(LibrariesRoot, NativePath);
-                                var NativeSha1 = NativeElement.TryGetProperty("sha1", out var NativeSha1Element) ? NativeSha1Element.GetString() : null;
-                                await DownloadFileAsync(HttpClient, NativeUrl, NativeArchivePath, NativeSha1, CancellationToken).ConfigureAwait(false);
-                                ExtractNativeArchive(NativeArchivePath, NativesRoot);
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        Logger.Info(Context, nameof(InstanceContentInstaller), "LibrariesCompleted", "Library download completed.", new
-        {
-            DownloadedLibraries
-        });
-
-        ClasspathEntries.Add(ClientJarPath);
-
-        string? AssetIndexId = null;
-        var DownloadedAssets = 0;
-
-        if (Root.TryGetProperty("assetIndex", out var AssetIndexElement))
-        {
-            AssetIndexId = AssetIndexElement.GetProperty("id").GetString();
-            var AssetIndexUrl = AssetIndexElement.GetProperty("url").GetString();
-
-            if (!string.IsNullOrWhiteSpace(AssetIndexId) && !string.IsNullOrWhiteSpace(AssetIndexUrl))
-            {
-                var AssetIndexPath = Path.Combine(AssetsIndexesRoot, AssetIndexId + ".json");
-                var AssetIndexSha1 = AssetIndexElement.TryGetProperty("sha1", out var AssetIndexSha1Element) ? AssetIndexSha1Element.GetString() : null;
-
-                Logger.Info(Context, nameof(InstanceContentInstaller), "AssetIndexDownloadStarted", "Downloading asset index.", new
-                {
-                    AssetIndexId,
-                    AssetIndexUrl
-                });
-
-                await DownloadFileAsync(HttpClient, AssetIndexUrl, AssetIndexPath, AssetIndexSha1, CancellationToken).ConfigureAwait(false);
-
-                var AssetIndexJson = await File.ReadAllTextAsync(AssetIndexPath, CancellationToken).ConfigureAwait(false);
-                using var AssetIndexDocument = JsonDocument.Parse(AssetIndexJson);
-
-                if (AssetIndexDocument.RootElement.TryGetProperty("objects", out var ObjectsElement))
-                {
-                    var Properties = ObjectsElement.EnumerateObject().ToArray();
-
-                    Logger.Info(Context, nameof(InstanceContentInstaller), "AssetsScanStarted", "Downloading asset objects.", new
-                    {
-                        Count = Properties.Length
-                    });
-
-                    foreach (var Property in Properties)
-                    {
-                        var Hash = Property.Value.GetProperty("hash").GetString();
-                        if (string.IsNullOrWhiteSpace(Hash) || Hash.Length < 2)
-                        {
-                            continue;
-                        }
-
-                        var Prefix = Hash[..2];
-                        var AssetObjectDirectory = Path.Combine(AssetsObjectsRoot, Prefix);
-                        var AssetObjectPath = Path.Combine(AssetObjectDirectory, Hash);
-                        var AssetObjectUrl = $"https://resources.download.minecraft.net/{Prefix}/{Hash}";
-
-                        await DownloadFileAsync(HttpClient, AssetObjectUrl, AssetObjectPath, Hash, CancellationToken).ConfigureAwait(false);
-                        DownloadedAssets++;
-
-                        if (DownloadedAssets % 100 == 0)
-                        {
-                            Logger.Info(Context, nameof(InstanceContentInstaller), "AssetsProgress", "Asset download progress.", new
-                            {
-                                DownloadedAssets,
-                                Total = Properties.Length
-                            });
-                        }
-                    }
-                }
-            }
-        }
-
-        Logger.Info(Context, nameof(InstanceContentInstaller), "AssetsCompleted", "Asset download completed.", new
-        {
-            DownloadedAssets,
-            AssetIndexId
-        });
-
-        var MainClass = Root.TryGetProperty("mainClass", out var MainClassElement)
-            ? MainClassElement.GetString()
-            : null;
-
-        var RuntimeMetadataPath = Path.Combine(RootPath, ".blockium", "runtime.json");
-        Directory.CreateDirectory(Path.GetDirectoryName(RuntimeMetadataPath)!);
-
-        var RuntimeMetadata = new RuntimeMetadataFile
-        {
-            Version = Plan.GameVersion,
-            MainClass = MainClass ?? string.Empty,
-            ClientJarPath = ClientJarPath.Replace(RootPath + Path.DirectorySeparatorChar, string.Empty, StringComparison.OrdinalIgnoreCase),
-            ClasspathEntries = ClasspathEntries.Select(PathValue => PathValue.Replace(RootPath + Path.DirectorySeparatorChar, string.Empty, StringComparison.OrdinalIgnoreCase)).ToArray(),
-            AssetsDirectory = AssetsRoot.Replace(RootPath + Path.DirectorySeparatorChar, string.Empty, StringComparison.OrdinalIgnoreCase),
-            AssetIndexId = AssetIndexId ?? string.Empty,
-            NativesDirectory = NativesRoot.Replace(RootPath + Path.DirectorySeparatorChar, string.Empty, StringComparison.OrdinalIgnoreCase),
-            ExtraJvmArguments = [],
-            ExtraGameArguments = []
-        };
-
-        await WriteRuntimeMetadataAsync(RuntimeMetadataPath, RuntimeMetadata, CancellationToken).ConfigureAwait(false);
-
-        Logger.Info(Context, nameof(InstanceContentInstaller), "RuntimeMetadataWritten", "Runtime metadata file written.", new
-        {
-            RuntimeMetadataPath,
-            MainClass
-        });
-    }
-
-    private async Task DownloadFabricRuntimeAsync(
-        InstallPlan Plan,
-        string RootPath,
-        OperationContext Context,
-        CancellationToken CancellationToken)
-    {
-        using var HttpClient = new HttpClient();
-
-        var ProfileUrl = $"https://meta.fabricmc.net/v2/versions/loader/{Plan.GameVersion}/{Plan.LoaderVersion}/profile/json";
-
-        Logger.Info(Context, nameof(InstanceContentInstaller), "FabricProfileDownloadStarted", "Downloading Fabric profile json.", new
-        {
-            ProfileUrl,
-            Plan.GameVersion,
-            Plan.LoaderVersion
-        });
-
-        var ProfileJson = await HttpClient.GetStringAsync(ProfileUrl, CancellationToken).ConfigureAwait(false);
-        using var ProfileDocument = JsonDocument.Parse(ProfileJson);
-        var Root = ProfileDocument.RootElement;
-
-        var RuntimeMetadataPath = Path.Combine(RootPath, ".blockium", "runtime.json");
-        var RuntimeMetadata = await ReadRuntimeMetadataAsync(RuntimeMetadataPath, CancellationToken).ConfigureAwait(false);
-
-        var MinecraftRoot = Path.Combine(RootPath, ".minecraft");
-        var LibrariesRoot = Path.Combine(MinecraftRoot, "libraries");
-        Directory.CreateDirectory(LibrariesRoot);
-
-        var FabricLibraries = new System.Collections.Generic.List<string>();
-        var DownloadedLibraries = 0;
-
-        if (Root.TryGetProperty("libraries", out var LibrariesElement) && LibrariesElement.ValueKind == JsonValueKind.Array)
-        {
-            foreach (var Library in LibrariesElement.EnumerateArray())
-            {
-                if (!Library.TryGetProperty("name", out var NameElement) || NameElement.ValueKind != JsonValueKind.String)
-                {
-                    continue;
-                }
-
-                var Coordinates = NameElement.GetString();
-                if (string.IsNullOrWhiteSpace(Coordinates))
-                {
-                    continue;
-                }
-
-                var RepositoryUrl = Library.TryGetProperty("url", out var UrlElement) && UrlElement.ValueKind == JsonValueKind.String
-                    ? UrlElement.GetString()
-                    : "https://maven.fabricmc.net/";
-
-                if (string.IsNullOrWhiteSpace(RepositoryUrl))
-                {
-                    RepositoryUrl = "https://maven.fabricmc.net/";
-                }
-
-                var RelativeArtifactPath = BuildMavenArtifactPath(Coordinates);
-                var DownloadUrl = CombineMavenUrl(RepositoryUrl, RelativeArtifactPath);
-                var DestinationPath = Path.Combine(LibrariesRoot, RelativeArtifactPath);
-
-                await DownloadFileAsync(HttpClient, DownloadUrl, DestinationPath, null, CancellationToken).ConfigureAwait(false);
-
-                FabricLibraries.Add(DestinationPath.Replace(RootPath + Path.DirectorySeparatorChar, string.Empty, StringComparison.OrdinalIgnoreCase));
-                DownloadedLibraries++;
-
-                if (DownloadedLibraries % 10 == 0)
-                {
-                    Logger.Info(Context, nameof(InstanceContentInstaller), "FabricLibrariesProgress", "Fabric library download progress.", new
-                    {
-                        DownloadedLibraries
-                    });
-                }
-            }
-        }
-
-        Logger.Info(Context, nameof(InstanceContentInstaller), "FabricLibrariesCompleted", "Fabric library download completed.", new
-        {
-            DownloadedLibraries
-        });
-
-        var MainClass = Root.TryGetProperty("mainClass", out var MainClassElement) && MainClassElement.ValueKind == JsonValueKind.String
-            ? MainClassElement.GetString()
-            : RuntimeMetadata.MainClass;
-
-        var JvmArgs = ExtractArguments(Root, "jvm");
-        var GameArgs = ExtractArguments(Root, "game");
-
-        var CombinedClasspath = new System.Collections.Generic.List<string>();
-        CombinedClasspath.AddRange(FabricLibraries);
-        foreach (var Existing in RuntimeMetadata.ClasspathEntries)
-        {
-            if (!CombinedClasspath.Contains(Existing, StringComparer.OrdinalIgnoreCase))
-            {
-                CombinedClasspath.Add(Existing);
-            }
-        }
-
-        RuntimeMetadata.MainClass = MainClass ?? RuntimeMetadata.MainClass;
-        RuntimeMetadata.ClasspathEntries = CombinedClasspath.ToArray();
-        RuntimeMetadata.ExtraJvmArguments = MergeDistinct(RuntimeMetadata.ExtraJvmArguments, JvmArgs);
-        RuntimeMetadata.ExtraGameArguments = MergeDistinct(RuntimeMetadata.ExtraGameArguments, GameArgs);
-        RuntimeMetadata.LoaderType = LoaderType.Fabric.ToString();
-        RuntimeMetadata.LoaderVersion = Plan.LoaderVersion ?? string.Empty;
-        RuntimeMetadata.LoaderProfileJsonPath = Path.Combine(".blockium", "fabric-profile.json");
-
-        var ProfilePath = Path.Combine(RootPath, ".blockium", "fabric-profile.json");
-        Directory.CreateDirectory(Path.GetDirectoryName(ProfilePath)!);
-        await File.WriteAllTextAsync(ProfilePath, ProfileJson, CancellationToken).ConfigureAwait(false);
-
-        await WriteRuntimeMetadataAsync(RuntimeMetadataPath, RuntimeMetadata, CancellationToken).ConfigureAwait(false);
-
-        Logger.Info(Context, nameof(InstanceContentInstaller), "FabricRuntimeMetadataUpdated", "Fabric runtime metadata updated.", new
-        {
-            RuntimeMetadata.MainClass,
-            ClasspathCount = RuntimeMetadata.ClasspathEntries.Length,
-            JvmArgumentCount = RuntimeMetadata.ExtraJvmArguments.Length,
-            GameArgumentCount = RuntimeMetadata.ExtraGameArguments.Length
-        });
     }
 
     private static string[] ExtractArguments(JsonElement Root, string Kind)
@@ -993,6 +814,158 @@ public sealed class InstanceContentInstaller : IInstanceContentInstaller
         return Convert.ToHexString(Hash).ToLowerInvariant();
     }
 
+
+    private async Task<List<string>> DownloadLibrariesInParallelAsync(
+        JsonElement LibrariesElement,
+        string LibrariesRoot,
+        string RootPath,
+        OperationContext Context,
+        CancellationToken CancellationToken)
+    {
+        var Results = new System.Collections.Concurrent.ConcurrentBag<string>();
+        var WorkItems = new List<LibraryDownloadWorkItem>();
+
+        foreach (var Library in LibrariesElement.EnumerateArray())
+        {
+            if (!IsLibraryAllowed(Library))
+            {
+                continue;
+            }
+
+            if (!Library.TryGetProperty("downloads", out var DownloadsElement))
+            {
+                continue;
+            }
+
+            if (DownloadsElement.TryGetProperty("artifact", out var ArtifactElement))
+            {
+                var PathValue = ArtifactElement.GetProperty("path").GetString();
+                var UrlValue = ArtifactElement.GetProperty("url").GetString();
+
+                if (!string.IsNullOrWhiteSpace(PathValue) && !string.IsNullOrWhiteSpace(UrlValue))
+                {
+                    var Sha1 = ArtifactElement.TryGetProperty("sha1", out var Sha1Element) ? Sha1Element.GetString() : null;
+                    WorkItems.Add(new LibraryDownloadWorkItem
+                    {
+                        Url = UrlValue!,
+                        DestinationPath = Path.Combine(LibrariesRoot, PathValue!),
+                        Sha1 = Sha1,
+                        AddToClasspath = true
+                    });
+                }
+            }
+
+            if (DownloadsElement.TryGetProperty("classifiers", out var ClassifiersElement))
+            {
+                var NativeKey = GetNativeClassifierKey(Library);
+                if (!string.IsNullOrWhiteSpace(NativeKey) &&
+                    ClassifiersElement.TryGetProperty(NativeKey, out var NativeElement))
+                {
+                    var NativePath = NativeElement.GetProperty("path").GetString();
+                    var NativeUrl = NativeElement.GetProperty("url").GetString();
+
+                    if (!string.IsNullOrWhiteSpace(NativePath) && !string.IsNullOrWhiteSpace(NativeUrl))
+                    {
+                        var NativeSha1 = NativeElement.TryGetProperty("sha1", out var NativeSha1Element) ? NativeSha1Element.GetString() : null;
+                        WorkItems.Add(new LibraryDownloadWorkItem
+                        {
+                            Url = NativeUrl!,
+                            DestinationPath = Path.Combine(LibrariesRoot, NativePath!),
+                            Sha1 = NativeSha1,
+                            AddToClasspath = false
+                        });
+                    }
+                }
+            }
+        }
+
+        var Counter = 0;
+
+        await Parallel.ForEachAsync(
+            WorkItems,
+            new ParallelOptions
+            {
+                MaxDegreeOfParallelism = MaxParallelLibraryDownloads,
+                CancellationToken = CancellationToken
+            },
+            async (Item, Ct) =>
+            {
+                using var HttpClient = new HttpClient();
+                await DownloadFileAsync(HttpClient, Item.Url, Item.DestinationPath, Item.Sha1, Ct).ConfigureAwait(false);
+
+                if (Item.AddToClasspath)
+                {
+                    Results.Add(Item.DestinationPath);
+                }
+
+                var Current = Interlocked.Increment(ref Counter);
+                if (Current % 25 == 0)
+                {
+                    Logger.Info(Context, nameof(InstanceContentInstaller), "LibrariesProgress", "Library download progress.", new
+                    {
+                        DownloadedLibraries = Current,
+                        Total = WorkItems.Count
+                    });
+                }
+            }).ConfigureAwait(false);
+
+        return Results
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+    }
+
+    private async Task DownloadAssetsInParallelAsync(
+        JsonElement ObjectsElement,
+        string AssetsObjectsRoot,
+        OperationContext Context,
+        CancellationToken CancellationToken)
+    {
+        var AssetHashes = ObjectsElement
+            .EnumerateObject()
+            .Select(Property => Property.Value.GetProperty("hash").GetString())
+            .Where(Hash => !string.IsNullOrWhiteSpace(Hash) && Hash!.Length >= 2)
+            .Select(Hash => Hash!)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+
+        var Counter = 0;
+
+        await Parallel.ForEachAsync(
+            AssetHashes,
+            new ParallelOptions
+            {
+                MaxDegreeOfParallelism = MaxParallelAssetDownloads,
+                CancellationToken = CancellationToken
+            },
+            async (Hash, Ct) =>
+            {
+                var Prefix = Hash[..2];
+                var AssetObjectDirectory = Path.Combine(AssetsObjectsRoot, Prefix);
+                var AssetObjectPath = Path.Combine(AssetObjectDirectory, Hash);
+                var AssetObjectUrl = "https://resources.download.minecraft.net/" + Prefix + "/" + Hash;
+
+                using var HttpClient = new HttpClient();
+                await DownloadFileAsync(HttpClient, AssetObjectUrl, AssetObjectPath, Hash, Ct).ConfigureAwait(false);
+
+                var Current = Interlocked.Increment(ref Counter);
+                if (Current % 100 == 0)
+                {
+                    Logger.Info(Context, nameof(InstanceContentInstaller), "AssetsProgress", "Asset download progress.", new
+                    {
+                        DownloadedAssets = Current,
+                        Total = AssetHashes.Length
+                    });
+                }
+            }).ConfigureAwait(false);
+    }
+
+    private sealed class LibraryDownloadWorkItem
+    {
+        public string Url { get; init; } = string.Empty;
+        public string DestinationPath { get; init; } = string.Empty;
+        public string? Sha1 { get; init; }
+        public bool AddToClasspath { get; init; }
+    }
     private sealed class RuntimeMetadataFile
     {
         public string Version { get; set; } = string.Empty;

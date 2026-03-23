@@ -1,4 +1,3 @@
-using System.IO;
 using BlockiumLauncher.Application.Abstractions.Auth;
 using BlockiumLauncher.Application.Abstractions.Diagnostics;
 using BlockiumLauncher.Application.Abstractions.Launch;
@@ -39,12 +38,9 @@ public static class ServiceCollectionExtensions
         Services.AddSingleton<ForgeMetadataClient>();
         Services.AddSingleton<NeoForgeMetadataClient>();
 
+        Services.AddSingleton(JsonFileStore => new LauncherPaths(LauncherPaths.CreateDefault().RootDirectory));
+        Services.AddSingleton<ILauncherPaths>(Provider => Provider.GetRequiredService<LauncherPaths>());
         Services.AddSingleton<JsonFileStore>();
-        Services.AddSingleton<ILauncherPaths>(_ =>
-            new LauncherPaths(
-                Path.Combine(
-                    Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
-                    "BlockiumLauncher")));
 
         Services.AddSingleton<IMetadataCacheRepository, JsonMetadataCacheRepository>();
         Services.AddSingleton<IAccountRepository, JsonAccountRepository>();
