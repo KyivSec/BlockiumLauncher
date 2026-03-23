@@ -561,7 +561,108 @@ internal static class Program
 
         return CliExitCodes.Success;
     }
-    private static async Task<int> HandleLaunchPlanAsync(IServiceProvider serviceProvider, string[] args, bool outputJson)
+    
+private static async Task<int> HandleInstancesRenameAsync(IServiceProvider serviceProvider, string[] args, bool outputJson)
+{
+    var instanceIdText = GetOptionalOption(args, "--instance-id");
+    var currentName = GetOptionalOption(args, "--name");
+    var newName = GetRequiredOption(args, "--new-name");
+
+    if ((string.IsNullOrWhiteSpace(instanceIdText) && string.IsNullOrWhiteSpace(currentName)) || string.IsNullOrWhiteSpace(newName))
+    {
+        WriteFailure("Cli.InvalidArguments", "Required: (--instance-id <id> or --name <name>) --new-name <name>.", outputJson);
+        return CliExitCodes.InvalidArguments;
+    }
+
+    var instanceRepository = serviceProvider.GetRequiredService<IInstanceRepository>();
+
+    var instance = !string.IsNullOrWhiteSpace(instanceIdText)
+        ? await instanceRepository.GetByIdAsync(new InstanceId(instanceIdText), CancellationToken.None).ConfigureAwait(false)
+        : await instanceRepository.GetByNameAsync(currentName!, CancellationToken.None).ConfigureAwait(false);
+
+    if (instance is null)
+    {
+        WriteFailure("Instances.NotFound", "The requested instance was not found.", outputJson);
+        return CliExitCodes.OperationFailed;
+    }
+
+    var conflictingInstance = await instanceRepository.GetByNameAsync(newName, CancellationToken.None).ConfigureAwait(false);
+    if (conflictingInstance is not null && conflictingInstance.InstanceId.ToString() != instance.InstanceId.ToString())
+    {
+        WriteFailure("Instances.NameAlreadyExists", "Another instance with the requested name already exists.", outputJson);
+        return CliExitCodes.OperationFailed;
+    }
+
+    instance.Rename(newName);
+    await instanceRepository.SaveAsync(instance, CancellationToken.None).ConfigureAwait(false);
+
+    var payload = new
+    {
+        InstanceId = instance.InstanceId.ToString(),
+        instance.Name,
+        instance.InstallLocation
+    };
+
+    WriteSuccess(payload, outputJson, lines =>
+    {
+        lines.Add($"Instance renamed: {payload.Name} ({payload.InstanceId})");
+        lines.Add($"InstalledPath: {payload.InstallLocation}");
+    });
+
+    return CliExitCodes.Success;
+}
+
+private static async Task<int> HandleInstancesDeleteAsync(IServiceProvider serviceProvider, string[] args, bool outputJson)
+{
+    var instanceIdText = GetOptionalOption(args, "--instance-id");
+    var instanceName = GetOptionalOption(args, "--name");
+    var deleteFiles = HasFlag(args, "--delete-files");
+
+    if (string.IsNullOrWhiteSpace(instanceIdText) && string.IsNullOrWhiteSpace(instanceName))
+    {
+        WriteFailure("Cli.InvalidArguments", "Required: --instance-id <id> or --name <name>.", outputJson);
+        return CliExitCodes.InvalidArguments;
+    }
+
+    var instanceRepository = serviceProvider.GetRequiredService<IInstanceRepository>();
+
+    var instance = !string.IsNullOrWhiteSpace(instanceIdText)
+        ? await instanceRepository.GetByIdAsync(new InstanceId(instanceIdText), CancellationToken.None).ConfigureAwait(false)
+        : await instanceRepository.GetByNameAsync(instanceName!, CancellationToken.None).ConfigureAwait(false);
+
+    if (instance is null)
+    {
+        WriteFailure("Instances.NotFound", "The requested instance was not found.", outputJson);
+        return CliExitCodes.OperationFailed;
+    }
+
+    var installLocation = instance.InstallLocation;
+    instance.MarkDeleted();
+    await instanceRepository.DeleteAsync(instance.InstanceId, CancellationToken.None).ConfigureAwait(false);
+
+    if (deleteFiles && !string.IsNullOrWhiteSpace(installLocation) && Directory.Exists(installLocation))
+    {
+        Directory.Delete(installLocation, true);
+    }
+
+    var payload = new
+    {
+        InstanceId = instance.InstanceId.ToString(),
+        instance.Name,
+        InstallLocation = installLocation,
+        DeletedFiles = deleteFiles
+    };
+
+    WriteSuccess(payload, outputJson, lines =>
+    {
+        lines.Add($"Instance deleted: {payload.Name} ({payload.InstanceId})");
+        lines.Add($"DeletedFiles: {payload.DeletedFiles}");
+        lines.Add($"InstalledPath: {payload.InstallLocation}");
+    });
+
+    return CliExitCodes.Success;
+}
+private static async Task<int> HandleLaunchPlanAsync(IServiceProvider serviceProvider, string[] args, bool outputJson)
     {
         var buildResult = await BuildLaunchPlanAsync(serviceProvider, args).ConfigureAwait(false);
         if (buildResult.IsFailure)
