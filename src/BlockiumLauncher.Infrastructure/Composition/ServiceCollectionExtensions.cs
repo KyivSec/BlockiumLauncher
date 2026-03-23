@@ -69,7 +69,10 @@ public static class ServiceCollectionExtensions
         Services.AddSingleton<BlockiumLauncher.Application.Abstractions.Storage.ITempWorkspaceFactory, BlockiumLauncher.Infrastructure.Storage.TempWorkspaceFactory>();
         Services.AddTransient<BlockiumLauncher.Application.Abstractions.Storage.IArchiveExtractor, BlockiumLauncher.Infrastructure.Storage.ZipArchiveExtractor>();
         Services.AddTransient<BlockiumLauncher.Application.Abstractions.Storage.IFileTransaction, BlockiumLauncher.Infrastructure.Storage.FileTransaction>();
-        Services.AddTransient<ILoaderRuntimePreparer, LegacyLoaderRuntimePreparer>();
+        Services.AddTransient<LegacyLoaderRuntimePreparer>();
+  Services.AddTransient<ILoaderRuntimePreparer, LegacyLoaderRuntimePreparer>();
+  Services.AddTransient<INeoForgeInstallOrchestrator, NeoForgeInstallOrchestrator>();
+  Services.AddTransient<ILoaderRuntimePreparer, NeoForgeRuntimePreparer>();
   Services.AddTransient<BlockiumLauncher.Application.Abstractions.Storage.IInstanceContentInstaller, BlockiumLauncher.Infrastructure.Storage.InstanceContentInstaller>();
 
         Services.AddSingleton<BlockiumLauncher.Application.Abstractions.Security.ITokenStore, BlockiumLauncher.Infrastructure.Security.WindowsProtectedTokenStore>();

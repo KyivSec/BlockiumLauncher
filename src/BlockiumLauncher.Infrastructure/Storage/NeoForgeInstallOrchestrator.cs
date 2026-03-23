@@ -19,7 +19,7 @@ using BlockiumLauncher.Shared.Results;
 
 namespace BlockiumLauncher.Infrastructure.Storage;
 
-public sealed class LegacyLoaderRuntimePreparer : ILoaderRuntimePreparer
+public sealed class NeoForgeInstallOrchestrator : INeoForgeInstallOrchestrator
 {
     private const int MaxParallelLibraryDownloads = 8;
     private const int MaxParallelAssetDownloads = 16;
@@ -30,7 +30,7 @@ public sealed class LegacyLoaderRuntimePreparer : ILoaderRuntimePreparer
     private readonly IJavaRuntimeResolver JavaRuntimeResolver;
     private readonly LauncherPaths LauncherPaths;
 
-    public LegacyLoaderRuntimePreparer()
+    public NeoForgeInstallOrchestrator()
         : this(
             NullStructuredLogger.Instance,
             DefaultOperationContextFactory.Instance,
@@ -39,7 +39,7 @@ public sealed class LegacyLoaderRuntimePreparer : ILoaderRuntimePreparer
     {
     }
 
-    public LegacyLoaderRuntimePreparer(
+    public NeoForgeInstallOrchestrator(
         IStructuredLogger Logger,
         IOperationContextFactory OperationContextFactory,
         IJavaRuntimeResolver JavaRuntimeResolver,
@@ -51,12 +51,7 @@ public sealed class LegacyLoaderRuntimePreparer : ILoaderRuntimePreparer
         this.LauncherPaths = LauncherPaths as LauncherPaths ?? throw new ArgumentNullException(nameof(LauncherPaths));
     }
 
-    public bool CanPrepare(LoaderType loaderType)
-{
- return loaderType is LoaderType.Vanilla or LoaderType.Fabric;
-}
-
-public async Task<Result<string>> PrepareAsync(
+    public async Task<Result<string>> PrepareAsync(
         InstallPlan Plan,
         ITempWorkspace Workspace,
         CancellationToken CancellationToken = default)
@@ -67,7 +62,7 @@ public async Task<Result<string>> PrepareAsync(
         {
             CancellationToken.ThrowIfCancellationRequested();
 
-            Logger.Info(Context, nameof(LegacyLoaderRuntimePreparer), "PrepareStarted", "Preparing instance content.", new
+            Logger.Info(Context, nameof(NeoForgeInstallOrchestrator), "PrepareStarted", "Preparing instance content.", new
             {
                 Plan.InstanceName,
                 Plan.GameVersion,
@@ -79,7 +74,7 @@ public async Task<Result<string>> PrepareAsync(
             var RootPath = Workspace.GetPath("instance-root");
             Directory.CreateDirectory(RootPath);
 
-            Logger.Info(Context, nameof(LegacyLoaderRuntimePreparer), "WorkspaceResolved", "Resolved temporary instance root.", new
+            Logger.Info(Context, nameof(NeoForgeInstallOrchestrator), "WorkspaceResolved", "Resolved temporary instance root.", new
             {
                 RootPath
             });
@@ -174,7 +169,7 @@ public async Task<Result<string>> PrepareAsync(
         }
         catch (Exception Exception)
         {
-            Logger.Error(Context, nameof(LegacyLoaderRuntimePreparer), "PrepareFailed", "Instance content preparation failed.", new
+            Logger.Error(Context, nameof(NeoForgeInstallOrchestrator), "PrepareFailed", "Instance content preparation failed.", new
             {
                 Plan.InstanceName,
                 Plan.GameVersion,
@@ -906,7 +901,7 @@ public async Task<Result<string>> PrepareAsync(
                 var Current = Interlocked.Increment(ref Counter);
                 if (Current % 25 == 0)
                 {
-                    Logger.Info(Context, nameof(LegacyLoaderRuntimePreparer), "LibrariesProgress", "Library download progress.", new
+                    Logger.Info(Context, nameof(NeoForgeInstallOrchestrator), "LibrariesProgress", "Library download progress.", new
                     {
                         DownloadedLibraries = Current,
                         Total = WorkItems.Count
@@ -955,7 +950,7 @@ public async Task<Result<string>> PrepareAsync(
                 var Current = Interlocked.Increment(ref Counter);
                 if (Current % 100 == 0)
                 {
-                    Logger.Info(Context, nameof(LegacyLoaderRuntimePreparer), "AssetsProgress", "Asset download progress.", new
+                    Logger.Info(Context, nameof(NeoForgeInstallOrchestrator), "AssetsProgress", "Asset download progress.", new
                     {
                         DownloadedAssets = Current,
                         Total = AssetHashes.Length
