@@ -8,6 +8,8 @@ using BlockiumLauncher.Contracts.Launch;
 using BlockiumLauncher.Domain.Enums;
 using BlockiumLauncher.Domain.ValueObjects;
 using BlockiumLauncher.Infrastructure.Composition;
+using BlockiumLauncher.Shared.Errors;
+using BlockiumLauncher.Shared.Results;
 using Microsoft.Extensions.DependencyInjection;
 
 namespace BlockiumLauncher.Host.Cli;
@@ -267,23 +269,22 @@ internal static class Program
         return CliExitCodes.Success;
     }
 
-    private static async Task<int> HandleInstancesInstallAsync(IServiceProvider serviceProvider, string[] args, bool outputJson)
+        private static async Task<int> HandleInstancesInstallAsync(IServiceProvider serviceProvider, string[] args, bool outputJson)
     {
         var name = GetRequiredOption(args, "--name");
-        var version = GetRequiredOption(args, "--version");
+        var version = GetOptionalOption(args, "--version");
         var loaderText = GetRequiredOption(args, "--loader");
         var loaderVersion = GetOptionalOption(args, "--loader-version");
         var targetDirectory = GetOptionalOption(args, "--path");
         var overwrite = HasFlag(args, "--overwrite");
         var downloadRuntime = HasFlag(args, "--download-runtime");
+        var latest = HasFlag(args, "--latest");
 
-        if (string.IsNullOrWhiteSpace(name) ||
-            string.IsNullOrWhiteSpace(version) ||
-            string.IsNullOrWhiteSpace(loaderText))
+        if (string.IsNullOrWhiteSpace(name) || string.IsNullOrWhiteSpace(loaderText))
         {
             WriteFailure(
                 "Cli.InvalidArguments",
-                "Required: --name <name> --version <version> --loader <vanilla|fabric|quilt|forge|neoforge> [--loader-version <version>] [--path <directory>] [--overwrite] [--download-runtime]",
+                "Required: --name <name> --loader <vanilla|fabric|quilt|forge|neoforge> [--version <version>] [--loader-version <version>] [--latest] [--path <directory>] [--overwrite] [--download-runtime]",
                 outputJson);
             return CliExitCodes.InvalidArguments;
         }
@@ -294,14 +295,48 @@ internal static class Program
             return CliExitCodes.InvalidArguments;
         }
 
+        if (string.IsNullOrWhiteSpace(version))
+        {
+            if (!latest)
+            {
+                WriteFailure("Cli.InvalidArguments", "Missing required option --version. Use --latest to auto-select the newest Minecraft release.", outputJson);
+                return CliExitCodes.InvalidArguments;
+            }
+
+            var latestGameVersionResult = await ResolveLatestGameVersionAsync(serviceProvider).ConfigureAwait(false);
+            if (latestGameVersionResult.IsFailure)
+            {
+                WriteFailure(latestGameVersionResult.Error.Code, latestGameVersionResult.Error.Message, outputJson);
+                return CliExitCodes.OperationFailed;
+            }
+
+            version = latestGameVersionResult.Value;
+        }
+
         if (loaderType == LoaderType.Vanilla)
         {
             loaderVersion = null;
         }
         else if (string.IsNullOrWhiteSpace(loaderVersion))
         {
-            WriteFailure("Cli.InvalidArguments", "Non-vanilla installs require --loader-version.", outputJson);
-            return CliExitCodes.InvalidArguments;
+            if (!latest)
+            {
+                WriteFailure("Cli.InvalidArguments", "Non-vanilla installs require --loader-version. Use --latest to auto-select the newest loader version.", outputJson);
+                return CliExitCodes.InvalidArguments;
+            }
+
+            var latestLoaderVersionResult = await ResolveLatestLoaderVersionAsync(
+                serviceProvider,
+                loaderType,
+                version).ConfigureAwait(false);
+
+            if (latestLoaderVersionResult.IsFailure)
+            {
+                WriteFailure(latestLoaderVersionResult.Error.Code, latestLoaderVersionResult.Error.Message, outputJson);
+                return CliExitCodes.OperationFailed;
+            }
+
+            loaderVersion = latestLoaderVersionResult.Value;
         }
 
         Console.WriteLine("Install started. Logs are being written to %APPDATA%\\BlockiumLauncher\\logs.");
@@ -339,7 +374,7 @@ internal static class Program
             lines.Add($"Instance installed: {payload.Name} ({payload.InstanceId})");
             lines.Add($"GameVersion: {payload.GameVersion}");
             lines.Add($"Loader: {payload.LoaderType}");
-            lines.Add($"LoaderVersion: {payload.LoaderVersion ?? "<none>"}");
+            lines.Add($"LoaderVersion: {payload.LoaderVersion ?? ""}");
             lines.Add($"InstalledPath: {payload.InstalledPath}");
         });
 
@@ -772,14 +807,15 @@ internal static class Program
         return CliExitCodes.Success;
     }
 
-    private static async Task<int> HandleVersionsLoadersAsync(IServiceProvider serviceProvider, string[] args, bool outputJson)
+        private static async Task<int> HandleVersionsLoadersAsync(IServiceProvider serviceProvider, string[] args, bool outputJson)
     {
         var loaderText = GetRequiredOption(args, "--loader");
-        var gameVersionText = GetRequiredOption(args, "--game-version");
+        var gameVersionText = GetOptionalOption(args, "--game-version");
+        var latestOnly = HasFlag(args, "--latest");
 
-        if (string.IsNullOrWhiteSpace(loaderText) || string.IsNullOrWhiteSpace(gameVersionText))
+        if (string.IsNullOrWhiteSpace(loaderText))
         {
-            WriteFailure("Cli.InvalidArguments", "Required: --loader <fabric|quilt|forge|neoforge|vanilla> --game-version <version>", outputJson);
+            WriteFailure("Cli.InvalidArguments", "Required: --loader <fabric|quilt|forge|neoforge|vanilla> [--game-version <version>] [--latest]", outputJson);
             return CliExitCodes.InvalidArguments;
         }
 
@@ -795,6 +831,24 @@ internal static class Program
             return CliExitCodes.InvalidArguments;
         }
 
+        if (string.IsNullOrWhiteSpace(gameVersionText))
+        {
+            if (!latestOnly)
+            {
+                WriteFailure("Cli.InvalidArguments", "Required: --loader <fabric|quilt|forge|neoforge> --game-version <version>. Use --latest to auto-select the newest Minecraft release.", outputJson);
+                return CliExitCodes.InvalidArguments;
+            }
+
+            var latestGameVersionResult = await ResolveLatestGameVersionAsync(serviceProvider).ConfigureAwait(false);
+            if (latestGameVersionResult.IsFailure)
+            {
+                WriteFailure(latestGameVersionResult.Error.Code, latestGameVersionResult.Error.Message, outputJson);
+                return CliExitCodes.OperationFailed;
+            }
+
+            gameVersionText = latestGameVersionResult.Value;
+        }
+
         var service = serviceProvider.GetRequiredService<ILoaderMetadataService>();
         var result = await service.GetLoaderVersionsAsync(
             loaderType,
@@ -807,7 +861,16 @@ internal static class Program
             return CliExitCodes.OperationFailed;
         }
 
-        var payload = result.Value.ToArray();
+        var payload = result.Value
+            .OrderByDescending(x => x.IsStable)
+            .ThenByDescending(x => x.LoaderVersion, StringComparer.OrdinalIgnoreCase)
+            .ThenByDescending(x => CompareVersionStrings(x.LoaderVersion, "0"))
+            .ToArray();
+
+        if (latestOnly && payload.Length > 1)
+        {
+            payload = [payload[0]];
+        }
 
         WriteSuccess(payload, outputJson, lines =>
         {
@@ -913,6 +976,109 @@ internal static class Program
         return (false, CliExitCodes.Success, null, null, result.Value);
     }
 
+    private static async Task<Result<string>> ResolveLatestGameVersionAsync(IServiceProvider serviceProvider)
+    {
+        var service = serviceProvider.GetRequiredService<IVersionManifestService>();
+        var result = await service.GetAvailableVersionsAsync(CancellationToken.None).ConfigureAwait(false);
+
+        if (result.IsFailure)
+        {
+            return Result<string>.Failure(result.Error);
+        }
+
+        var latestRelease = result.Value
+            .Where(x => x.IsRelease)
+            .OrderByDescending(x => x.ReleasedAtUtc)
+            .FirstOrDefault();
+
+        if (latestRelease is null)
+        {
+            return Result<string>.Failure(new Error(
+                "Cli.LatestGameVersionNotFound",
+                "Could not resolve the latest Minecraft release version."));
+        }
+
+        return Result<string>.Success(latestRelease.VersionId.ToString());
+    }
+
+    private static async Task<Result<string>> ResolveLatestLoaderVersionAsync(
+        IServiceProvider serviceProvider,
+        LoaderType loaderType,
+        string gameVersion)
+    {
+        var service = serviceProvider.GetRequiredService<ILoaderMetadataService>();
+        var result = await service.GetLoaderVersionsAsync(
+            loaderType,
+            new VersionId(gameVersion),
+            CancellationToken.None).ConfigureAwait(false);
+
+        if (result.IsFailure)
+        {
+            return Result<string>.Failure(result.Error);
+        }
+
+        var latestLoaderVersion = result.Value
+            .OrderByDescending(x => x.IsStable)
+            .ThenByDescending(x => NormalizeComparableVersion(x.LoaderVersion), StringComparer.Ordinal)
+            .ThenByDescending(x => x.LoaderVersion, StringComparer.OrdinalIgnoreCase)
+            .Select(x => x.LoaderVersion)
+            .FirstOrDefault();
+
+        if (string.IsNullOrWhiteSpace(latestLoaderVersion))
+        {
+            return Result<string>.Failure(new Error(
+                "Cli.LatestLoaderVersionNotFound",
+                $"Could not resolve the latest loader version for {loaderType} on Minecraft {gameVersion}."));
+        }
+
+        return Result<string>.Success(latestLoaderVersion);
+    }
+
+    private static int CompareVersionStrings(string? left, string? right)
+    {
+        return string.Compare(
+            NormalizeComparableVersion(left),
+            NormalizeComparableVersion(right),
+            StringComparison.Ordinal);
+    }
+
+    private static string NormalizeComparableVersion(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return "0000000000";
+        }
+
+        var parts = new List<string>();
+        var buffer = new List<char>();
+
+        foreach (var character in value)
+        {
+            if (char.IsDigit(character))
+            {
+                buffer.Add(character);
+                continue;
+            }
+
+            if (buffer.Count > 0)
+            {
+                parts.Add(new string(buffer.ToArray()).PadLeft(10, '0'));
+                buffer.Clear();
+            }
+        }
+
+        if (buffer.Count > 0)
+        {
+            parts.Add(new string(buffer.ToArray()).PadLeft(10, '0'));
+        }
+
+        if (parts.Count == 0)
+        {
+            return value;
+        }
+
+        return string.Join(".", parts);
+    }
     private static bool Is(string left, string right)
     {
         return string.Equals(left, right, StringComparison.OrdinalIgnoreCase);

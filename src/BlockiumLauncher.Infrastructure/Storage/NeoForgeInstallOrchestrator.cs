@@ -405,7 +405,7 @@ public sealed class NeoForgeInstallOrchestrator : INeoForgeInstallOrchestrator
         await WriteRuntimeMetadataAsync(RuntimeMetadataPath, RuntimeMetadata, CancellationToken).ConfigureAwait(false);
     }
 
-    private async Task DownloadNeoForgeRuntimeAsync(
+            private async Task DownloadNeoForgeRuntimeAsync(
         InstallPlan Plan,
         string RootPath,
         OperationContext Context,
@@ -431,6 +431,19 @@ public sealed class NeoForgeInstallOrchestrator : INeoForgeInstallOrchestrator
         var MinecraftRoot = Path.Combine(NeoForgeRoot, "runtime");
         Directory.CreateDirectory(MinecraftRoot);
 
+        var LauncherProfilesPath = Path.Combine(MinecraftRoot, "launcher_profiles.json");
+        if (!File.Exists(LauncherProfilesPath))
+        {
+            var LauncherProfilesJson = """
+{
+  "profiles": {},
+  "settings": {},
+  "version": 3
+}
+""";
+            await File.WriteAllTextAsync(LauncherProfilesPath, LauncherProfilesJson, CancellationToken).ConfigureAwait(false);
+        }
+
         var StartInfo = new ProcessStartInfo
         {
             FileName = JavaPath,
@@ -446,29 +459,75 @@ public sealed class NeoForgeInstallOrchestrator : INeoForgeInstallOrchestrator
         StartInfo.ArgumentList.Add("--install-client");
         StartInfo.ArgumentList.Add(".");
 
+        Logger.Info(Context, nameof(NeoForgeInstallOrchestrator), "NeoForgeInstallerStart", "Starting NeoForge installer.", new
+        {
+            JavaPath,
+            InstallerPath,
+            WorkingDirectory = MinecraftRoot,
+            Arguments = StartInfo.ArgumentList.ToArray(),
+            Plan.GameVersion,
+            Plan.LoaderVersion
+        });
+
         using var Process = new Process { StartInfo = StartInfo };
-        Process.Start();
+
+        try
+        {
+            Process.Start();
+        }
+        catch (Exception Exception)
+        {
+            Logger.Error(Context, nameof(NeoForgeInstallOrchestrator), "NeoForgeInstallerStartFailed", "Failed to start NeoForge installer process.", new
+            {
+                JavaPath,
+                InstallerPath,
+                WorkingDirectory = MinecraftRoot,
+                Arguments = StartInfo.ArgumentList.ToArray()
+            }, Exception);
+
+            throw;
+        }
 
         var StdOutTask = Process.StandardOutput.ReadToEndAsync(CancellationToken);
         var StdErrTask = Process.StandardError.ReadToEndAsync(CancellationToken);
 
         await Process.WaitForExitAsync(CancellationToken).ConfigureAwait(false);
 
+        var StdOut = await StdOutTask.ConfigureAwait(false);
         var StdErr = await StdErrTask.ConfigureAwait(false);
-        await StdOutTask.ConfigureAwait(false);
+
+        Logger.Info(Context, nameof(NeoForgeInstallOrchestrator), "NeoForgeInstallerFinished", "NeoForge installer process finished.", new
+        {
+            ExitCode = Process.ExitCode,
+            JavaPath,
+            InstallerPath,
+            WorkingDirectory = MinecraftRoot,
+            Arguments = StartInfo.ArgumentList.ToArray(),
+            StdOut,
+            StdErr
+        });
 
         if (Process.ExitCode != 0)
         {
-            throw new InvalidOperationException("NeoForge installer failed: " + StdErr);
+            throw new InvalidOperationException(
+                "NeoForge installer failed." + Environment.NewLine +
+                "ExitCode: " + Process.ExitCode + Environment.NewLine +
+                "JavaPath: " + JavaPath + Environment.NewLine +
+                "InstallerPath: " + InstallerPath + Environment.NewLine +
+                "WorkingDirectory: " + MinecraftRoot + Environment.NewLine +
+                "Arguments: " + string.Join(" ", StartInfo.ArgumentList.Select(static value => value.Contains(' ') ? "\"" + value + "\"" : value)) + Environment.NewLine +
+                "StdOut:" + Environment.NewLine + StdOut + Environment.NewLine +
+                "StdErr:" + Environment.NewLine + StdErr);
         }
 
-        await BuildNeoForgeRuntimeMetadataAsync(Plan, RootPath, MinecraftRoot, CancellationToken).ConfigureAwait(false);
+        await BuildNeoForgeRuntimeMetadataAsync(Plan, RootPath, MinecraftRoot, Context, CancellationToken).ConfigureAwait(false);
     }
 
-    private async Task BuildNeoForgeRuntimeMetadataAsync(
+            private async Task BuildNeoForgeRuntimeMetadataAsync(
         InstallPlan Plan,
         string RootPath,
         string NeoForgeRuntimeRoot,
+        OperationContext Context,
         CancellationToken CancellationToken)
     {
         var RuntimeMetadataPath = Path.Combine(RootPath, ".blockium", "runtime.json");
@@ -493,6 +552,16 @@ public sealed class NeoForgeInstallOrchestrator : INeoForgeInstallOrchestrator
         {
             throw new InvalidOperationException("Could not find installed NeoForge version json.");
         }
+
+        Logger.Info(Context, nameof(NeoForgeInstallOrchestrator), "NeoForgeMetadataSourceResolved", "Resolved NeoForge metadata source files.", new
+        {
+            RuntimeMetadataPath,
+            NeoForgeRuntimeRoot,
+            VersionsRoot,
+            VersionJsonPath,
+            CandidateJsonFiles,
+            LoaderVersion = Plan.LoaderVersion
+        });
 
         var VersionJson = await File.ReadAllTextAsync(VersionJsonPath, CancellationToken).ConfigureAwait(false);
         using var VersionDocument = JsonDocument.Parse(VersionJson);
@@ -759,7 +828,7 @@ public sealed class NeoForgeInstallOrchestrator : INeoForgeInstallOrchestrator
         }
     }
 
-    private static async Task DownloadFileAsync(HttpClient HttpClient, string Url, string DestinationPath, string? Sha1, CancellationToken CancellationToken)
+            private static async Task DownloadFileAsync(HttpClient HttpClient, string Url, string DestinationPath, string? Sha1, CancellationToken CancellationToken)
     {
         if (File.Exists(DestinationPath) && !string.IsNullOrWhiteSpace(Sha1))
         {
@@ -776,34 +845,47 @@ public sealed class NeoForgeInstallOrchestrator : INeoForgeInstallOrchestrator
             Directory.CreateDirectory(ParentDirectory);
         }
 
-        var TempPath = DestinationPath + ".tmp";
-        if (File.Exists(TempPath))
-        {
-            File.Delete(TempPath);
-        }
+        var TempPath = DestinationPath + "." + Guid.NewGuid().ToString("N") + ".tmp";
 
-        await using (var Input = await HttpClient.GetStreamAsync(Url, CancellationToken).ConfigureAwait(false))
-        await using (var Output = File.Create(TempPath))
+        try
         {
-            await Input.CopyToAsync(Output, CancellationToken).ConfigureAwait(false);
-        }
-
-        if (!string.IsNullOrWhiteSpace(Sha1))
-        {
-            var ActualSha1 = await ComputeSha1Async(TempPath, CancellationToken).ConfigureAwait(false);
-            if (!string.Equals(ActualSha1, Sha1, StringComparison.OrdinalIgnoreCase))
+            await using (var Input = await HttpClient.GetStreamAsync(Url, CancellationToken).ConfigureAwait(false))
+            await using (var Output = new FileStream(TempPath, FileMode.CreateNew, FileAccess.Write, FileShare.None))
             {
-                File.Delete(TempPath);
-                throw new InvalidOperationException("Downloaded file hash mismatch.");
+                await Input.CopyToAsync(Output, CancellationToken).ConfigureAwait(false);
             }
-        }
 
-        if (File.Exists(DestinationPath))
+            if (!string.IsNullOrWhiteSpace(Sha1))
+            {
+                var ActualSha1 = await ComputeSha1Async(TempPath, CancellationToken).ConfigureAwait(false);
+                if (!string.Equals(ActualSha1, Sha1, StringComparison.OrdinalIgnoreCase))
+                {
+                    throw new InvalidOperationException("Downloaded file hash mismatch.");
+                }
+            }
+
+            if (File.Exists(DestinationPath))
+            {
+                File.Delete(DestinationPath);
+            }
+
+            File.Move(TempPath, DestinationPath);
+        }
+        catch
         {
-            File.Delete(DestinationPath);
-        }
+            if (File.Exists(TempPath))
+            {
+                try
+                {
+                    File.Delete(TempPath);
+                }
+                catch
+                {
+                }
+            }
 
-        File.Move(TempPath, DestinationPath);
+            throw;
+        }
     }
 
     private static async Task<string> ComputeSha1Async(string FilePath, CancellationToken CancellationToken)
