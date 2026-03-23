@@ -18,6 +18,7 @@ using BlockiumLauncher.Infrastructure.Persistence.Json;
 using BlockiumLauncher.Infrastructure.Persistence.Paths;
 using BlockiumLauncher.Infrastructure.Persistence.Repositories;
 using BlockiumLauncher.Infrastructure.Services;
+using BlockiumLauncher.Infrastructure.Storage;
 using Microsoft.Extensions.DependencyInjection;
 
 namespace BlockiumLauncher.Infrastructure.Composition;
@@ -40,6 +41,7 @@ public static class ServiceCollectionExtensions
 
         Services.AddSingleton(JsonFileStore => new LauncherPaths(LauncherPaths.CreateDefault().RootDirectory));
         Services.AddSingleton<ILauncherPaths>(Provider => Provider.GetRequiredService<LauncherPaths>());
+  Services.AddSingleton<ISharedContentLayout, SharedContentLayout>();
         Services.AddSingleton<JsonFileStore>();
 
         Services.AddSingleton<IMetadataCacheRepository, JsonMetadataCacheRepository>();
@@ -59,6 +61,7 @@ public static class ServiceCollectionExtensions
         Services.AddSingleton<IJavaValidationService, JavaValidationService>();
         Services.AddSingleton<IJavaDiscoveryService, JavaDiscoveryService>();
         Services.AddSingleton<IJavaRuntimeResolver, ManagedJavaRuntimeResolver>();
+  Services.AddSingleton<IJavaRequirementResolver, JavaRequirementResolver>();
 
         Services.AddTransient<DiscoverJavaUseCase>();
         Services.AddTransient<ValidateJavaUseCase>();
@@ -66,7 +69,8 @@ public static class ServiceCollectionExtensions
         Services.AddSingleton<BlockiumLauncher.Application.Abstractions.Storage.ITempWorkspaceFactory, BlockiumLauncher.Infrastructure.Storage.TempWorkspaceFactory>();
         Services.AddTransient<BlockiumLauncher.Application.Abstractions.Storage.IArchiveExtractor, BlockiumLauncher.Infrastructure.Storage.ZipArchiveExtractor>();
         Services.AddTransient<BlockiumLauncher.Application.Abstractions.Storage.IFileTransaction, BlockiumLauncher.Infrastructure.Storage.FileTransaction>();
-        Services.AddTransient<BlockiumLauncher.Application.Abstractions.Storage.IInstanceContentInstaller, BlockiumLauncher.Infrastructure.Storage.InstanceContentInstaller>();
+        Services.AddTransient<ILoaderRuntimePreparer, LegacyLoaderRuntimePreparer>();
+  Services.AddTransient<BlockiumLauncher.Application.Abstractions.Storage.IInstanceContentInstaller, BlockiumLauncher.Infrastructure.Storage.InstanceContentInstaller>();
 
         Services.AddSingleton<BlockiumLauncher.Application.Abstractions.Security.ITokenStore, BlockiumLauncher.Infrastructure.Security.WindowsProtectedTokenStore>();
         Services.AddSingleton<IMicrosoftAuthProvider, PlaceholderMicrosoftAuthProvider>();

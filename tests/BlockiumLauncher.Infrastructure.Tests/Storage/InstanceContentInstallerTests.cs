@@ -1,5 +1,7 @@
 using System.IO;
+using System.Threading;
 using System.Threading.Tasks;
+using BlockiumLauncher.Application.Abstractions.Storage;
 using BlockiumLauncher.Application.UseCases.Install;
 using BlockiumLauncher.Domain.Enums;
 using BlockiumLauncher.Infrastructure.Storage;
@@ -10,47 +12,87 @@ namespace BlockiumLauncher.Infrastructure.Tests.Storage;
 public sealed class InstanceContentInstallerTests
 {
     [Fact]
-    public async Task PrepareAsync_CreatesDirectoriesAndMetadata()
+    public async Task PrepareAsync_DelegatesToMatchingPreparer()
     {
-        var Factory = new TempWorkspaceFactory();
-        await using var Workspace = await Factory.CreateAsync("content-installer");
+        var factory = new TempWorkspaceFactory();
+        await using var workspace = await factory.CreateAsync("content-installer");
 
-        var Plan = new InstallPlan
+        var plan = new InstallPlan
         {
             InstanceName = "TestInstance",
             GameVersion = "1.20.1",
             LoaderType = LoaderType.Vanilla,
             LoaderVersion = null,
             TargetDirectory = Path.Combine(Path.GetTempPath(), "UnusedTarget"),
-            Steps =
-            [
-                new InstallPlanStep
-                {
-                    Kind = InstallPlanStepKind.CreateDirectory,
-                    Destination = ".minecraft"
-                },
-                new InstallPlanStep
-                {
-                    Kind = InstallPlanStepKind.CreateDirectory,
-                    Destination = ".minecraft\\mods"
-                },
-                new InstallPlanStep
-                {
-                    Kind = InstallPlanStepKind.WriteMetadata,
-                    Destination = ".blockium\\install-plan.json"
-                }
-            ]
+            Steps = []
         };
 
-        var Installer = new InstanceContentInstaller();
-        var Result = await Installer.PrepareAsync(Plan, Workspace);
+        var installer = new InstanceContentInstaller(
+        [
+            new TestLoaderRuntimePreparer(
+                LoaderType.Vanilla,
+                global::BlockiumLauncher.Shared.Results.Result<string>.Success(workspace.RootPath))
+        ]);
 
-        Assert.True(Result.IsSuccess);
+        var prepareResult = await installer.PrepareAsync(plan, workspace);
 
-        var RootPath = Result.Value;
-        Assert.True(Directory.Exists(Path.Combine(RootPath, ".minecraft")));
-        Assert.True(Directory.Exists(Path.Combine(RootPath, ".minecraft", "mods")));
-        Assert.True(File.Exists(Path.Combine(RootPath, ".blockium", "install-plan.json")));
-        Assert.True(File.Exists(Path.Combine(RootPath, "instance.json")));
+        Assert.True(prepareResult.IsSuccess);
+        Assert.Equal(workspace.RootPath, prepareResult.Value);
+    }
+
+    [Fact]
+    public async Task PrepareAsync_FailsWhenNoMatchingPreparerExists()
+    {
+        var factory = new TempWorkspaceFactory();
+        await using var workspace = await factory.CreateAsync("content-installer");
+
+        var plan = new InstallPlan
+        {
+            InstanceName = "TestInstance",
+            GameVersion = "1.20.1",
+            LoaderType = LoaderType.Fabric,
+            LoaderVersion = "0.16.10",
+            TargetDirectory = Path.Combine(Path.GetTempPath(), "UnusedTarget"),
+            Steps = []
+        };
+
+        var installer = new InstanceContentInstaller(
+        [
+            new TestLoaderRuntimePreparer(
+                LoaderType.Vanilla,
+                global::BlockiumLauncher.Shared.Results.Result<string>.Success(workspace.RootPath))
+        ]);
+
+        var prepareResult = await installer.PrepareAsync(plan, workspace);
+
+        Assert.True(prepareResult.IsFailure);
+        Assert.Equal("Install.LoaderRuntimePreparerNotFound", prepareResult.Error.Code);
+    }
+
+    private sealed class TestLoaderRuntimePreparer : ILoaderRuntimePreparer
+    {
+        private readonly LoaderType loaderType;
+        private readonly global::BlockiumLauncher.Shared.Results.Result<string> result;
+
+        public TestLoaderRuntimePreparer(
+            LoaderType loaderType,
+            global::BlockiumLauncher.Shared.Results.Result<string> result)
+        {
+            this.loaderType = loaderType;
+            this.result = result;
+        }
+
+        public bool CanPrepare(LoaderType loaderType)
+        {
+            return loaderType == this.loaderType;
+        }
+
+        public Task<global::BlockiumLauncher.Shared.Results.Result<string>> PrepareAsync(
+            InstallPlan plan,
+            ITempWorkspace workspace,
+            CancellationToken cancellationToken = default)
+        {
+            return Task.FromResult(result);
+        }
     }
 }

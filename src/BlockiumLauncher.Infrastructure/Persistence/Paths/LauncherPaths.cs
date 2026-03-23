@@ -18,7 +18,9 @@ public sealed class LauncherPaths : ILauncherPaths
     public string SharedAssetObjectsDirectory { get; }
     public string SharedLoadersDirectory { get; }
     public string SharedNativesDirectory { get; }
+
     public string LogsDirectory { get; }
+
     public string RuntimesDirectory { get; }
     public string ManagedJavaDirectory { get; }
 
@@ -27,18 +29,20 @@ public sealed class LauncherPaths : ILauncherPaths
     public string JavaInstallationsFilePath { get; }
     public string VersionsCacheFilePath { get; }
 
-    public LauncherPaths(string RootDirectory)
+    public LauncherPaths(string rootDirectory)
     {
-        if (string.IsNullOrWhiteSpace(RootDirectory)) {
-            throw new ArgumentException("Value cannot be null or whitespace.", nameof(RootDirectory));
+        if (string.IsNullOrWhiteSpace(rootDirectory))
+        {
+            throw new ArgumentException("Value cannot be null or whitespace.", nameof(rootDirectory));
         }
 
-        this.RootDirectory = RootDirectory.Trim();
-        DataDirectory = Path.Combine(this.RootDirectory, "data");
-        CacheDirectory = Path.Combine(this.RootDirectory, "cache");
-        InstancesDirectory = Path.Combine(this.RootDirectory, "instances");
+        RootDirectory = Path.GetFullPath(rootDirectory.Trim());
 
-        SharedDirectory = Path.Combine(this.RootDirectory, "shared");
+        DataDirectory = Path.Combine(RootDirectory, "data");
+        CacheDirectory = Path.Combine(RootDirectory, "cache");
+        InstancesDirectory = Path.Combine(RootDirectory, "instances");
+
+        SharedDirectory = Path.Combine(RootDirectory, "shared");
         SharedVersionsDirectory = Path.Combine(SharedDirectory, "versions");
         SharedLibrariesDirectory = Path.Combine(SharedDirectory, "libraries");
         SharedAssetsDirectory = Path.Combine(SharedDirectory, "assets");
@@ -46,8 +50,10 @@ public sealed class LauncherPaths : ILauncherPaths
         SharedAssetObjectsDirectory = Path.Combine(SharedAssetsDirectory, "objects");
         SharedLoadersDirectory = Path.Combine(SharedDirectory, "loaders");
         SharedNativesDirectory = Path.Combine(SharedDirectory, "natives");
-        LogsDirectory = Path.Combine(this.RootDirectory, "logs");
-        RuntimesDirectory = Path.Combine(this.RootDirectory, "runtimes");
+
+        LogsDirectory = Path.Combine(RootDirectory, "logs");
+
+        RuntimesDirectory = Path.Combine(RootDirectory, "runtimes");
         ManagedJavaDirectory = Path.Combine(RuntimesDirectory, "java");
 
         InstancesFilePath = Path.Combine(DataDirectory, "instances.json");
@@ -63,54 +69,58 @@ public sealed class LauncherPaths : ILauncherPaths
         return new LauncherPaths(GetDefaultRootDirectory());
     }
 
-    public string GetLoaderVersionsCacheFilePath(LoaderType LoaderType, VersionId GameVersion)
+    public string GetLoaderVersionsCacheFilePath(LoaderType loaderType, VersionId gameVersion)
     {
-        var LoaderName = LoaderType.ToString().ToLowerInvariant();
-        var VersionName = SanitizeFileName(GameVersion.ToString());
+        var loaderName = loaderType.ToString().ToLowerInvariant();
+        var versionName = SanitizeFileName(gameVersion.ToString());
 
-        return Path.Combine(CacheDirectory, "loaders", $"{LoaderName}-{VersionName}.json");
+        return Path.Combine(CacheDirectory, "loaders", $"{loaderName}-{versionName}.json");
     }
 
-    public string GetSharedVersionDirectory(string GameVersion)
+    public string GetSharedVersionDirectory(string gameVersion)
     {
-        return Path.Combine(SharedVersionsDirectory, SanitizeFileName(GameVersion));
+        return Path.Combine(SharedVersionsDirectory, SanitizeFileName(gameVersion));
     }
 
-    public string GetSharedVersionJsonPath(string GameVersion)
+    public string GetSharedVersionJsonPath(string gameVersion)
     {
-        return Path.Combine(GetSharedVersionDirectory(GameVersion), $"{SanitizeFileName(GameVersion)}.json");
+        var safeGameVersion = SanitizeFileName(gameVersion);
+        return Path.Combine(GetSharedVersionDirectory(gameVersion), $"{safeGameVersion}.json");
     }
 
-    public string GetSharedClientJarPath(string GameVersion)
+    public string GetSharedClientJarPath(string gameVersion)
     {
-        return Path.Combine(GetSharedVersionDirectory(GameVersion), $"{SanitizeFileName(GameVersion)}.jar");
+        var safeGameVersion = SanitizeFileName(gameVersion);
+        return Path.Combine(GetSharedVersionDirectory(gameVersion), $"{safeGameVersion}.jar");
     }
 
-    public string GetSharedNativesDirectory(string RuntimeKey)
+    public string GetSharedNativesDirectory(string runtimeKey)
     {
-        return Path.Combine(SharedNativesDirectory, SanitizeFileName(RuntimeKey));
+        return Path.Combine(SharedNativesDirectory, SanitizeFileName(runtimeKey));
     }
 
-    public string GetSharedLoaderDirectory(LoaderType LoaderType, string GameVersion, string LoaderVersion)
+    public string GetSharedLoaderDirectory(LoaderType loaderType, string gameVersion, string loaderVersion)
     {
         return Path.Combine(
             SharedLoadersDirectory,
-            LoaderType.ToString().ToLowerInvariant(),
-            SanitizeFileName(GameVersion),
-            SanitizeFileName(LoaderVersion));
+            loaderType.ToString().ToLowerInvariant(),
+            SanitizeFileName(gameVersion),
+            SanitizeFileName(loaderVersion));
     }
 
-    public string GetManagedJavaDirectory(string RuntimeKey)
+    public string GetManagedJavaDirectory(string runtimeKey)
     {
-        return Path.Combine(ManagedJavaDirectory, SanitizeFileName(RuntimeKey));
+        return Path.Combine(ManagedJavaDirectory, SanitizeFileName(runtimeKey));
     }
 
     private void EnsureDirectoryLayout()
     {
         Directory.CreateDirectory(RootDirectory);
+
         Directory.CreateDirectory(DataDirectory);
         Directory.CreateDirectory(CacheDirectory);
         Directory.CreateDirectory(InstancesDirectory);
+
         Directory.CreateDirectory(SharedDirectory);
         Directory.CreateDirectory(SharedVersionsDirectory);
         Directory.CreateDirectory(SharedLibrariesDirectory);
@@ -119,44 +129,58 @@ public sealed class LauncherPaths : ILauncherPaths
         Directory.CreateDirectory(SharedAssetObjectsDirectory);
         Directory.CreateDirectory(SharedLoadersDirectory);
         Directory.CreateDirectory(SharedNativesDirectory);
+
         Directory.CreateDirectory(LogsDirectory);
+
         Directory.CreateDirectory(RuntimesDirectory);
         Directory.CreateDirectory(ManagedJavaDirectory);
+
+        Directory.CreateDirectory(Path.Combine(CacheDirectory, "loaders"));
     }
 
     private static string GetDefaultRootDirectory()
     {
-        if (OperatingSystem.IsWindows()) {
+        if (OperatingSystem.IsWindows())
+        {
             return Path.Combine(
                 Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
                 "BlockiumLauncher");
         }
 
-        if (OperatingSystem.IsMacOS()) {
-            var Home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
-            return Path.Combine(Home, "Library", "Application Support", "BlockiumLauncher");
+        if (OperatingSystem.IsMacOS())
+        {
+            var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+            return Path.Combine(home, "Library", "Application Support", "BlockiumLauncher");
         }
 
-        var XdgDataHome = Environment.GetEnvironmentVariable("XDG_DATA_HOME");
-        if (!string.IsNullOrWhiteSpace(XdgDataHome)) {
-            return Path.Combine(XdgDataHome, "BlockiumLauncher");
+        var xdgDataHome = Environment.GetEnvironmentVariable("XDG_DATA_HOME");
+        if (!string.IsNullOrWhiteSpace(xdgDataHome))
+        {
+            return Path.Combine(xdgDataHome, "BlockiumLauncher");
         }
 
-        var UserHome = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
-        return Path.Combine(UserHome, ".local", "share", "BlockiumLauncher");
+        var userHome = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+        return Path.Combine(userHome, ".local", "share", "BlockiumLauncher");
     }
 
-    private static string SanitizeFileName(string Value)
+    private static string SanitizeFileName(string value)
     {
-        var InvalidChars = Path.GetInvalidFileNameChars();
-        var Buffer = Value.ToCharArray();
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return "unknown";
+        }
 
-        for (var Index = 0; Index < Buffer.Length; Index++) {
-            if (InvalidChars.Contains(Buffer[Index])) {
-                Buffer[Index] = '-';
+        var invalidChars = Path.GetInvalidFileNameChars();
+        var buffer = value.ToCharArray();
+
+        for (var index = 0; index < buffer.Length; index++)
+        {
+            if (invalidChars.Contains(buffer[index]))
+            {
+                buffer[index] = '-';
             }
         }
 
-        return new string(Buffer);
+        return new string(buffer);
     }
 }
