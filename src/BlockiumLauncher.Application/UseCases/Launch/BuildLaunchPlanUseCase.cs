@@ -100,7 +100,6 @@ public sealed class BuildLaunchPlanUseCase
             {
                 InstanceId = Request.InstanceId.ToString()
             });
-
             return Result<LaunchPlanDto>.Failure(LaunchErrors.InstanceNotFound);
         }
 
@@ -124,7 +123,6 @@ public sealed class BuildLaunchPlanUseCase
                     JavaResolveResult.Error.Code,
                     JavaResolveResult.Error.Message
                 });
-
                 return Result<LaunchPlanDto>.Failure(LaunchErrors.JavaExecutableMissing);
             }
 
@@ -194,8 +192,8 @@ public sealed class BuildLaunchPlanUseCase
             return Result<LaunchPlanDto>.Failure(LaunchErrors.ClasspathMissing);
         }
 
-        string? AssetsDirectory = ResolveAssetsDirectory(Request, RuntimeMetadata, WorkingDirectory);
-        string? AssetIndexId = ResolveAssetIndexId(Request, RuntimeMetadata);
+        var AssetsDirectory = ResolveAssetsDirectory(Request, RuntimeMetadata, WorkingDirectory);
+        var AssetIndexId = ResolveAssetIndexId(Request, RuntimeMetadata);
 
         if (AssetsDirectory is not null && !Directory.Exists(AssetsDirectory))
         {
@@ -207,24 +205,52 @@ public sealed class BuildLaunchPlanUseCase
             return Result<LaunchPlanDto>.Failure(LaunchErrors.AssetIndexMissing);
         }
 
+        var NativesDirectory = ResolveNativesDirectory(RuntimeMetadata, WorkingDirectory);
+        var ClasspathText = string.Join(Path.PathSeparator, ClasspathEntries);
+
+        var TokenMap = BuildTokenMap(
+            Instance,
+            Account,
+            WorkingDirectory,
+            AssetsDirectory,
+            AssetIndexId,
+            NativesDirectory,
+            ResolvedMainClass,
+            ClasspathEntries,
+            ClasspathText,
+            RuntimeMetadata);
+
         var JvmArguments = new List<LaunchArgumentDto>
         {
             new() { Value = "-Xms" + Instance.LaunchProfile.MinMemoryMb + "m" },
             new() { Value = "-Xmx" + Instance.LaunchProfile.MaxMemoryMb + "m" }
         };
 
-        var NativesDirectory = ResolveNativesDirectory(RuntimeMetadata, WorkingDirectory);
         if (!string.IsNullOrWhiteSpace(NativesDirectory))
         {
-            JvmArguments.Add(new LaunchArgumentDto { Value = "-Djava.library.path=" + NativesDirectory });
+            JvmArguments.Add(new LaunchArgumentDto
+            {
+                Value = "-Djava.library.path=" + NativesDirectory
+            });
+        }
+
+        foreach (var Arg in ResolveRuntimeArguments(RuntimeMetadata?.ExtraJvmArguments, TokenMap))
+        {
+            JvmArguments.Add(new LaunchArgumentDto { Value = Arg });
         }
 
         JvmArguments.Add(new LaunchArgumentDto { Value = "-cp" });
-        JvmArguments.Add(new LaunchArgumentDto { Value = string.Join(Path.PathSeparator, ClasspathEntries) });
+        JvmArguments.Add(new LaunchArgumentDto { Value = ClasspathText });
 
         foreach (var Arg in Instance.LaunchProfile.ExtraJvmArgs)
         {
-            JvmArguments.Add(new LaunchArgumentDto { Value = Arg });
+            if (!string.IsNullOrWhiteSpace(Arg))
+            {
+                JvmArguments.Add(new LaunchArgumentDto
+                {
+                    Value = ExpandTokens(Arg, TokenMap)
+                });
+            }
         }
 
         var GameArguments = new List<LaunchArgumentDto>
@@ -255,6 +281,11 @@ public sealed class BuildLaunchPlanUseCase
             GameArguments.Add(new LaunchArgumentDto { Value = AssetIndexId! });
         }
 
+        foreach (var Arg in ResolveRuntimeArguments(RuntimeMetadata?.ExtraGameArguments, TokenMap))
+        {
+            GameArguments.Add(new LaunchArgumentDto { Value = Arg });
+        }
+
         if (Instance.LoaderType != LoaderType.Vanilla)
         {
             var LoaderVersionText = Instance.LoaderVersion?.ToString();
@@ -271,14 +302,20 @@ public sealed class BuildLaunchPlanUseCase
 
         foreach (var Arg in Instance.LaunchProfile.ExtraGameArgs)
         {
-            GameArguments.Add(new LaunchArgumentDto { Value = Arg });
+            if (!string.IsNullOrWhiteSpace(Arg))
+            {
+                GameArguments.Add(new LaunchArgumentDto
+                {
+                    Value = ExpandTokens(Arg, TokenMap)
+                });
+            }
         }
 
         var EnvironmentVariables = Instance.LaunchProfile.EnvironmentVariables
             .Select(x => new LaunchEnvironmentVariableDto
             {
                 Name = x.Key,
-                Value = x.Value
+                Value = ExpandTokens(x.Value, TokenMap)
             })
             .ToList();
 
@@ -302,6 +339,7 @@ public sealed class BuildLaunchPlanUseCase
         {
             Plan.InstanceId,
             Plan.AccountId,
+            Plan.MainClass,
             ClasspathCount = Plan.ClasspathEntries.Count,
             JvmArgumentCount = Plan.JvmArguments.Count,
             GameArgumentCount = Plan.GameArguments.Count,
@@ -342,7 +380,10 @@ public sealed class BuildLaunchPlanUseCase
         return null;
     }
 
-    private static List<string> ResolveClasspathEntries(BuildLaunchPlanRequest Request, RuntimeMetadataDto? RuntimeMetadata, string WorkingDirectory)
+    private static List<string> ResolveClasspathEntries(
+        BuildLaunchPlanRequest Request,
+        RuntimeMetadataDto? RuntimeMetadata,
+        string WorkingDirectory)
     {
         var SourceEntries = Request.ClasspathEntries is not null && Request.ClasspathEntries.Count > 0
             ? Request.ClasspathEntries
@@ -366,13 +407,19 @@ public sealed class BuildLaunchPlanUseCase
                 continue;
             }
 
-            Result.Add(FullEntry);
+            if (!Result.Contains(FullEntry, StringComparer.OrdinalIgnoreCase))
+            {
+                Result.Add(FullEntry);
+            }
         }
 
         return Result;
     }
 
-    private static string? ResolveAssetsDirectory(BuildLaunchPlanRequest Request, RuntimeMetadataDto? RuntimeMetadata, string WorkingDirectory)
+    private static string? ResolveAssetsDirectory(
+        BuildLaunchPlanRequest Request,
+        RuntimeMetadataDto? RuntimeMetadata,
+        string WorkingDirectory)
     {
         var Value = !string.IsNullOrWhiteSpace(Request.AssetsDirectory)
             ? Request.AssetsDirectory
@@ -417,6 +464,169 @@ public sealed class BuildLaunchPlanUseCase
         return Directory.Exists(FullPath) ? FullPath : null;
     }
 
+    private static Dictionary<string, string> BuildTokenMap(
+        dynamic Instance,
+        dynamic Account,
+        string WorkingDirectory,
+        string? AssetsDirectory,
+        string? AssetIndexId,
+        string? NativesDirectory,
+        string ResolvedMainClass,
+        IReadOnlyList<string> ClasspathEntries,
+        string ClasspathText,
+        RuntimeMetadataDto? RuntimeMetadata)
+    {
+        var GameVersion = Instance.GameVersion?.ToString() ?? string.Empty;
+        var LoaderVersion = Instance.LoaderVersion?.ToString() ?? string.Empty;
+        var VersionName = !string.IsNullOrWhiteSpace(RuntimeMetadata?.Version)
+            ? RuntimeMetadata.Version
+            : (!string.IsNullOrWhiteSpace(LoaderVersion) ? LoaderVersion : GameVersion);
+
+        var LibraryDirectory = TryResolveLibraryDirectory(ClasspathEntries, RuntimeMetadata);
+
+        return new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["${auth_player_name}"] = Account.Username ?? string.Empty,
+            ["${version_name}"] = VersionName,
+            ["${game_directory}"] = WorkingDirectory,
+            ["${game_assets}"] = AssetsDirectory ?? string.Empty,
+            ["${assets_root}"] = AssetsDirectory ?? string.Empty,
+            ["${assets_index_name}"] = AssetIndexId ?? string.Empty,
+            ["${auth_uuid}"] = Account.PlayerUuid ?? string.Empty,
+            ["${auth_access_token}"] = "0",
+            ["${auth_session}"] = "0",
+            ["${user_type}"] = "legacy",
+            ["${version_type}"] = "release",
+            ["${natives_directory}"] = NativesDirectory ?? string.Empty,
+            ["${launcher_name}"] = "BlockiumLauncher",
+            ["${launcher_version}"] = "1.0.0",
+            ["${classpath}"] = ClasspathText,
+            ["${classpath_separator}"] = Path.PathSeparator.ToString(),
+            ["${library_directory}"] = LibraryDirectory,
+            ["${user_properties}"] = "{}",
+            ["${clientid}"] = string.Empty,
+            ["${auth_xuid}"] = string.Empty,
+            ["${resolution_width}"] = string.Empty,
+            ["${resolution_height}"] = string.Empty,
+            ["${main_class}"] = ResolvedMainClass
+        };
+    }
+
+    private static string TryResolveLibraryDirectory(
+        IReadOnlyList<string> ClasspathEntries,
+        RuntimeMetadataDto? RuntimeMetadata)
+    {
+        if (!string.IsNullOrWhiteSpace(RuntimeMetadata?.LibraryDirectory))
+        {
+            return RuntimeMetadata.LibraryDirectory;
+        }
+
+        foreach (var Entry in ClasspathEntries)
+        {
+            var DirectoryPath = File.Exists(Entry) ? Path.GetDirectoryName(Entry) : Entry;
+            if (string.IsNullOrWhiteSpace(DirectoryPath))
+            {
+                continue;
+            }
+
+            var Current = new DirectoryInfo(DirectoryPath);
+            while (Current is not null)
+            {
+                if (string.Equals(Current.Name, "libraries", StringComparison.OrdinalIgnoreCase))
+                {
+                    return Current.FullName;
+                }
+
+                Current = Current.Parent;
+            }
+        }
+
+        return string.Empty;
+    }
+
+        private static IEnumerable<string> ResolveRuntimeArguments(
+        IEnumerable<string>? SourceArguments,
+        IReadOnlyDictionary<string, string> TokenMap)
+    {
+        if (SourceArguments is null)
+        {
+            yield break;
+        }
+
+        foreach (var Arg in SourceArguments)
+        {
+            if (string.IsNullOrWhiteSpace(Arg))
+            {
+                continue;
+            }
+
+            var Expanded = ExpandTokens(Arg, TokenMap).Trim();
+            if (Expanded.Length == 0)
+            {
+                continue;
+            }
+
+            foreach (var Token in SplitCommandLineArguments(Expanded))
+            {
+                if (!string.IsNullOrWhiteSpace(Token))
+                {
+                    yield return Token;
+                }
+            }
+        }
+    }
+
+    private static IEnumerable<string> SplitCommandLineArguments(string Value)
+    {
+        if (string.IsNullOrWhiteSpace(Value))
+        {
+            yield break;
+        }
+
+        var Buffer = new System.Text.StringBuilder();
+        var InQuotes = false;
+
+        for (var Index = 0; Index < Value.Length; Index++)
+        {
+            var Character = Value[Index];
+
+            if (Character == '"')
+            {
+                InQuotes = !InQuotes;
+                continue;
+            }
+
+            if (char.IsWhiteSpace(Character) && !InQuotes)
+            {
+                if (Buffer.Length > 0)
+                {
+                    yield return Buffer.ToString();
+                    Buffer.Clear();
+                }
+
+                continue;
+            }
+
+            Buffer.Append(Character);
+        }
+
+        if (Buffer.Length > 0)
+        {
+            yield return Buffer.ToString();
+        }
+    }
+    private static string ExpandTokens(string Value, IReadOnlyDictionary<string, string> TokenMap)
+    {
+        var Result = Value;
+
+        foreach (var Pair in TokenMap)
+        {
+            Result = Result.Replace(Pair.Key, Pair.Value, StringComparison.OrdinalIgnoreCase);
+        }
+
+        return Result;
+    }
+
     private sealed class RuntimeMetadataDto
     {
         public string Version { get; init; } = string.Empty;
@@ -426,6 +636,7 @@ public sealed class BuildLaunchPlanUseCase
         public string AssetsDirectory { get; init; } = string.Empty;
         public string AssetIndexId { get; init; } = string.Empty;
         public string NativesDirectory { get; init; } = string.Empty;
+        public string LibraryDirectory { get; init; } = string.Empty;
         public string[] ExtraJvmArguments { get; init; } = [];
         public string[] ExtraGameArguments { get; init; } = [];
     }

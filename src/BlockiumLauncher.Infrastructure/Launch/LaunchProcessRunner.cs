@@ -3,6 +3,7 @@ using System.Diagnostics;
 using BlockiumLauncher.Application.Abstractions.Launch;
 using BlockiumLauncher.Application.UseCases.Launch;
 using BlockiumLauncher.Contracts.Launch;
+using BlockiumLauncher.Shared.Errors;
 using BlockiumLauncher.Shared.Results;
 
 namespace BlockiumLauncher.Infrastructure.Launch;
@@ -11,18 +12,20 @@ public sealed class LaunchProcessRunner : ILaunchProcessRunner
 {
     private readonly ConcurrentDictionary<Guid, LaunchSession> Sessions = new();
 
-    public Task<Result<LaunchInstanceResult>> StartAsync(LaunchPlanDto Plan, CancellationToken CancellationToken = default)
+    public async Task<Result<LaunchInstanceResult>> StartAsync(LaunchPlanDto Plan, CancellationToken CancellationToken = default)
     {
         try
         {
             if (Plan is null || string.IsNullOrWhiteSpace(Plan.JavaExecutablePath))
             {
-                return Task.FromResult(Result<LaunchInstanceResult>.Failure(LaunchErrors.ProcessStartFailed));
+                return Result<LaunchInstanceResult>.Failure(LaunchErrors.ProcessStartFailed);
             }
+
+            var JavaPath = NormalizeJavaExecutablePath(Plan.JavaExecutablePath);
 
             var StartInfo = new ProcessStartInfo
             {
-                FileName = Plan.JavaExecutablePath,
+                FileName = JavaPath,
                 WorkingDirectory = Plan.WorkingDirectory,
                 UseShellExecute = false,
                 RedirectStandardOutput = true,
@@ -55,9 +58,10 @@ public sealed class LaunchProcessRunner : ILaunchProcessRunner
 
             var LaunchId = Guid.NewGuid();
             var Session = new LaunchSession(LaunchId, Plan, Process);
+
             if (!Sessions.TryAdd(LaunchId, Session))
             {
-                return Task.FromResult(Result<LaunchInstanceResult>.Failure(LaunchErrors.ProcessStartFailed));
+                return Result<LaunchInstanceResult>.Failure(LaunchErrors.ProcessStartFailed);
             }
 
             Process.OutputDataReceived += (_, Args) =>
@@ -86,18 +90,44 @@ public sealed class LaunchProcessRunner : ILaunchProcessRunner
             {
                 Sessions.TryRemove(LaunchId, out _);
                 Process.Dispose();
-                return Task.FromResult(Result<LaunchInstanceResult>.Failure(LaunchErrors.ProcessStartFailed));
+                return Result<LaunchInstanceResult>.Failure(LaunchErrors.ProcessStartFailed);
             }
 
             Session.MarkStarted(Process.Id);
             Process.BeginOutputReadLine();
             Process.BeginErrorReadLine();
 
-            return Task.FromResult(Result<LaunchInstanceResult>.Success(Session.ToResult()));
+            await Task.Delay(2000, CancellationToken).ConfigureAwait(false);
+            Session.RefreshState();
+
+            if (Session.HasExited)
+            {
+                var OutputPreview = string.Join(
+                    Environment.NewLine,
+                    Session.GetOutputLines()
+                        .TakeLast(60)
+                        .Select(x => $"[{x.Stream}] {x.Message}"));
+
+                Sessions.TryRemove(LaunchId, out _);
+                Process.Dispose();
+
+                return Result<LaunchInstanceResult>.Failure(
+                    new Error(
+                        "Launch.ProcessExitedEarly",
+                        "The launched process exited immediately." + Environment.NewLine +
+                        "ExitCode: " + (Session.ExitCode?.ToString() ?? "<null>") + Environment.NewLine +
+                        "Java: " + JavaPath + Environment.NewLine +
+                        "MainClass: " + Plan.MainClass + Environment.NewLine +
+                        "JvmArgumentCount: " + Plan.JvmArguments.Count + Environment.NewLine +
+                        "GameArgumentCount: " + Plan.GameArguments.Count + Environment.NewLine +
+                        "RecentOutput:" + Environment.NewLine + OutputPreview));
+            }
+
+            return Result<LaunchInstanceResult>.Success(Session.ToResult());
         }
         catch
         {
-            return Task.FromResult(Result<LaunchInstanceResult>.Failure(LaunchErrors.ProcessStartFailed));
+            return Result<LaunchInstanceResult>.Failure(LaunchErrors.ProcessStartFailed);
         }
     }
 
@@ -148,6 +178,22 @@ public sealed class LaunchProcessRunner : ILaunchProcessRunner
         }
     }
 
+    private static string NormalizeJavaExecutablePath(string JavaPath)
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return JavaPath;
+        }
+
+        if (!JavaPath.EndsWith("javaw.exe", StringComparison.OrdinalIgnoreCase))
+        {
+            return JavaPath;
+        }
+
+        var ConsoleJavaPath = Path.Combine(Path.GetDirectoryName(JavaPath)!, "java.exe");
+        return File.Exists(ConsoleJavaPath) ? ConsoleJavaPath : JavaPath;
+    }
+
     private sealed class LaunchSession
     {
         private readonly object Sync = new();
@@ -188,6 +234,14 @@ public sealed class LaunchProcessRunner : ILaunchProcessRunner
                     Stream = Stream,
                     Message = Message
                 });
+            }
+        }
+
+        public IReadOnlyList<LaunchOutputLine> GetOutputLines()
+        {
+            lock (Sync)
+            {
+                return OutputLines.ToList();
             }
         }
 

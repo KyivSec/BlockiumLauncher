@@ -636,8 +636,8 @@ public sealed class NeoForgeInstallOrchestrator : INeoForgeInstallOrchestrator
 
         RuntimeMetadata.MainClass = MainClass ?? RuntimeMetadata.MainClass;
         RuntimeMetadata.ClasspathEntries = CombinedClasspath.ToArray();
-        RuntimeMetadata.ExtraJvmArguments = MergeDistinct(RuntimeMetadata.ExtraJvmArguments, ExtraJvmArguments);
-        RuntimeMetadata.ExtraGameArguments = MergeDistinct(RuntimeMetadata.ExtraGameArguments, ExtraGameArguments);
+        RuntimeMetadata.ExtraJvmArguments = MergePreservingOrder(RuntimeMetadata.ExtraJvmArguments, ExtraJvmArguments);
+        RuntimeMetadata.ExtraGameArguments = MergePreservingOrder(RuntimeMetadata.ExtraGameArguments, ExtraGameArguments);
         RuntimeMetadata.LoaderType = LoaderType.NeoForge.ToString();
         RuntimeMetadata.LoaderVersion = Plan.LoaderVersion ?? string.Empty;
         RuntimeMetadata.LoaderProfileJsonPath = Path.Combine(NeoForgeRuntimeRoot, "neoforge-version.json");
@@ -1062,5 +1062,34 @@ public sealed class NeoForgeInstallOrchestrator : INeoForgeInstallOrchestrator
         public string LoaderType { get; set; } = string.Empty;
         public string LoaderVersion { get; set; } = string.Empty;
         public string LoaderProfileJsonPath { get; set; } = string.Empty;
+    }
+
+    private static string[] MergePreservingOrder(IEnumerable<string>? existing, IEnumerable<string>? incoming)
+    {
+        var result = new List<string>();
+
+        if (existing is not null)
+        {
+            foreach (var item in existing)
+            {
+                if (!string.IsNullOrWhiteSpace(item))
+                {
+                    result.Add(item);
+                }
+            }
+        }
+
+        if (incoming is not null)
+        {
+            foreach (var item in incoming)
+            {
+                if (!string.IsNullOrWhiteSpace(item))
+                {
+                    result.Add(item);
+                }
+            }
+        }
+
+        return result.ToArray();
     }
 }
