@@ -4,6 +4,7 @@ using System.IO;
 using System.Threading;
 using System.Threading.Tasks;
 using BlockiumLauncher.Application.Abstractions.Diagnostics;
+using BlockiumLauncher.Application.Abstractions.Services;
 using BlockiumLauncher.Application.Diagnostics;
 using BlockiumLauncher.Shared.Results;
 
@@ -12,12 +13,14 @@ namespace BlockiumLauncher.Application.UseCases.Install;
 public sealed class RepairInstanceUseCase
 {
     private readonly VerifyInstanceFilesUseCase VerifyInstanceFilesUseCase;
+    private readonly IInstanceContentMetadataService InstanceContentMetadataService;
     private readonly IStructuredLogger Logger;
     private readonly IOperationContextFactory OperationContextFactory;
 
     public RepairInstanceUseCase(VerifyInstanceFilesUseCase VerifyInstanceFilesUseCase)
         : this(
             VerifyInstanceFilesUseCase,
+            NoOpInstanceContentMetadataService.Instance,
             NullStructuredLogger.Instance,
             DefaultOperationContextFactory.Instance)
     {
@@ -25,10 +28,12 @@ public sealed class RepairInstanceUseCase
 
     public RepairInstanceUseCase(
         VerifyInstanceFilesUseCase VerifyInstanceFilesUseCase,
+        IInstanceContentMetadataService InstanceContentMetadataService,
         IStructuredLogger Logger,
         IOperationContextFactory OperationContextFactory)
     {
         this.VerifyInstanceFilesUseCase = VerifyInstanceFilesUseCase ?? throw new ArgumentNullException(nameof(VerifyInstanceFilesUseCase));
+        this.InstanceContentMetadataService = InstanceContentMetadataService ?? throw new ArgumentNullException(nameof(InstanceContentMetadataService));
         this.Logger = Logger ?? throw new ArgumentNullException(nameof(Logger));
         this.OperationContextFactory = OperationContextFactory ?? throw new ArgumentNullException(nameof(OperationContextFactory));
     }
@@ -116,6 +121,10 @@ public sealed class RepairInstanceUseCase
             Changed = RepairedPaths.Count > 0,
             RepairedPaths
         });
+
+        await InstanceContentMetadataService
+            .ReindexAsync(FinalVerificationResult.Value.Instance, CancellationToken)
+            .ConfigureAwait(false);
 
         return Result<RepairInstanceResult>.Success(new RepairInstanceResult
         {

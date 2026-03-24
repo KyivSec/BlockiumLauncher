@@ -16,6 +16,8 @@ public sealed class LauncherPathsTests
         Assert.Equal(@"C:\Temp\BlockiumLauncher\data\accounts.json", Paths.AccountsFilePath);
         Assert.Equal(@"C:\Temp\BlockiumLauncher\data\java-installations.json", Paths.JavaInstallationsFilePath);
         Assert.Equal(@"C:\Temp\BlockiumLauncher\cache\versions.json", Paths.VersionsCacheFilePath);
+        Assert.Equal(@"C:\Temp\BlockiumLauncher\diagnostics", Paths.DiagnosticsDirectory);
+        Assert.Equal(@"C:\Temp\BlockiumLauncher\logs\latest.log", Paths.LatestLogFilePath);
     }
 
     [Fact]
@@ -25,5 +27,15 @@ public sealed class LauncherPathsTests
         var FilePath = Paths.GetLoaderVersionsCacheFilePath(LoaderType.Forge, new VersionId("1.21.1"));
 
         Assert.Equal(@"C:\Temp\BlockiumLauncher\cache\loaders\forge-1.21.1.json", FilePath);
+    }
+
+    [Fact]
+    public void BuildsInstanceAndContextPaths()
+    {
+        var Paths = new LauncherPaths(@"C:\Temp\BlockiumLauncher");
+
+        Assert.Equal(@"C:\Temp\BlockiumLauncher\instances\My_Instance", Paths.GetDefaultInstanceDirectory("My Instance"));
+        Assert.Equal(@"C:\Temp\BlockiumLauncher\instances\My_Instance\.blockium\instance-metadata.json", Paths.GetInstanceMetadataFilePath(@"C:\Temp\BlockiumLauncher\instances\My_Instance"));
+        Assert.Equal(@"C:\Temp\BlockiumLauncher\logs\launch_instance_20260324.log", Paths.GetContextLogFilePath("launch instance", new DateTimeOffset(2026, 3, 24, 12, 0, 0, TimeSpan.Zero)));
     }
 }

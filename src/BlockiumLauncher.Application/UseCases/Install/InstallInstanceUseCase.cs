@@ -4,6 +4,7 @@ using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using BlockiumLauncher.Application.Abstractions.Repositories;
+using BlockiumLauncher.Application.Abstractions.Services;
 using BlockiumLauncher.Application.Abstractions.Storage;
 using BlockiumLauncher.Domain.Entities;
 using BlockiumLauncher.Domain.ValueObjects;
@@ -18,19 +19,22 @@ public sealed class InstallInstanceUseCase
     private readonly IInstanceContentInstaller InstanceContentInstaller;
     private readonly IFileTransaction FileTransaction;
     private readonly IInstanceRepository InstanceRepository;
+    private readonly IInstanceContentMetadataService InstanceContentMetadataService;
 
     public InstallInstanceUseCase(
         InstallPlanBuilder InstallPlanBuilder,
         ITempWorkspaceFactory TempWorkspaceFactory,
         IInstanceContentInstaller InstanceContentInstaller,
         IFileTransaction FileTransaction,
-        IInstanceRepository InstanceRepository)
+        IInstanceRepository InstanceRepository,
+        IInstanceContentMetadataService InstanceContentMetadataService)
     {
         this.InstallPlanBuilder = InstallPlanBuilder ?? throw new ArgumentNullException(nameof(InstallPlanBuilder));
         this.TempWorkspaceFactory = TempWorkspaceFactory ?? throw new ArgumentNullException(nameof(TempWorkspaceFactory));
         this.InstanceContentInstaller = InstanceContentInstaller ?? throw new ArgumentNullException(nameof(InstanceContentInstaller));
         this.FileTransaction = FileTransaction ?? throw new ArgumentNullException(nameof(FileTransaction));
         this.InstanceRepository = InstanceRepository ?? throw new ArgumentNullException(nameof(InstanceRepository));
+        this.InstanceContentMetadataService = InstanceContentMetadataService ?? throw new ArgumentNullException(nameof(InstanceContentMetadataService));
     }
 
     public async Task<Result<InstallInstanceResult>> ExecuteAsync(
@@ -114,6 +118,7 @@ public sealed class InstallInstanceUseCase
                 null);
 
             await InstanceRepository.SaveAsync(Instance, CancellationToken).ConfigureAwait(false);
+            await InstanceContentMetadataService.ReindexAsync(Instance, CancellationToken).ConfigureAwait(false);
             CleanupRedundantInstallArtifacts(Plan.TargetDirectory);
 
             return Result<InstallInstanceResult>.Success(new InstallInstanceResult

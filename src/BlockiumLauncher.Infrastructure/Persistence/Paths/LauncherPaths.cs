@@ -20,6 +20,8 @@ public sealed class LauncherPaths : ILauncherPaths
     public string SharedNativesDirectory { get; }
 
     public string LogsDirectory { get; }
+    public string DiagnosticsDirectory { get; }
+    public string LatestLogFilePath { get; }
 
     public string RuntimesDirectory { get; }
     public string ManagedJavaDirectory { get; }
@@ -52,6 +54,8 @@ public sealed class LauncherPaths : ILauncherPaths
         SharedNativesDirectory = Path.Combine(SharedDirectory, "natives");
 
         LogsDirectory = Path.Combine(RootDirectory, "logs");
+        DiagnosticsDirectory = Path.Combine(RootDirectory, "diagnostics");
+        LatestLogFilePath = Path.Combine(LogsDirectory, "latest.log");
 
         RuntimesDirectory = Path.Combine(RootDirectory, "runtimes");
         ManagedJavaDirectory = Path.Combine(RuntimesDirectory, "java");
@@ -113,6 +117,28 @@ public sealed class LauncherPaths : ILauncherPaths
         return Path.Combine(ManagedJavaDirectory, SanitizeFileName(runtimeKey));
     }
 
+    public string GetDefaultInstanceDirectory(string instanceName)
+    {
+        return Path.Combine(InstancesDirectory, SanitizeDirectoryName(instanceName, "instance"));
+    }
+
+    public string GetInstanceDataDirectory(string installLocation)
+    {
+        return Path.Combine(Path.GetFullPath(installLocation), ".blockium");
+    }
+
+    public string GetInstanceMetadataFilePath(string installLocation)
+    {
+        return Path.Combine(GetInstanceDataDirectory(installLocation), "instance-metadata.json");
+    }
+
+    public string GetContextLogFilePath(string context, DateTimeOffset? timestampUtc = null)
+    {
+        var effectiveTimestamp = timestampUtc ?? DateTimeOffset.UtcNow;
+        var safeContext = SanitizeDirectoryName(context, "launcher");
+        return Path.Combine(LogsDirectory, $"{safeContext}_{effectiveTimestamp:yyyyMMdd}.log");
+    }
+
     private void EnsureDirectoryLayout()
     {
         Directory.CreateDirectory(RootDirectory);
@@ -131,6 +157,7 @@ public sealed class LauncherPaths : ILauncherPaths
         Directory.CreateDirectory(SharedNativesDirectory);
 
         Directory.CreateDirectory(LogsDirectory);
+        Directory.CreateDirectory(DiagnosticsDirectory);
 
         Directory.CreateDirectory(RuntimesDirectory);
         Directory.CreateDirectory(ManagedJavaDirectory);
@@ -182,5 +209,14 @@ public sealed class LauncherPaths : ILauncherPaths
         }
 
         return new string(buffer);
+    }
+
+    private static string SanitizeDirectoryName(string value, string fallback)
+    {
+        var sanitized = SanitizeFileName(value)
+            .Trim()
+            .Replace(' ', '_');
+
+        return string.IsNullOrWhiteSpace(sanitized) ? fallback : sanitized;
     }
 }

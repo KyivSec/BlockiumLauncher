@@ -3,6 +3,8 @@ using BlockiumLauncher.Application.Abstractions.Repositories;
 using BlockiumLauncher.Application.Abstractions.Services;
 using BlockiumLauncher.Application.UseCases.Accounts;
 using BlockiumLauncher.Application.UseCases.Install;
+using BlockiumLauncher.Application.Abstractions.Instances;
+using BlockiumLauncher.Application.UseCases.Instances;
 using BlockiumLauncher.Application.UseCases.Launch;
 using BlockiumLauncher.Contracts.Launch;
 using BlockiumLauncher.Domain.Enums;
@@ -12,6 +14,7 @@ using BlockiumLauncher.Infrastructure.Persistence.Paths;
 using BlockiumLauncher.Shared.Errors;
 using BlockiumLauncher.Shared.Results;
 using Microsoft.Extensions.DependencyInjection;
+using InstallRepairInstanceRequest = BlockiumLauncher.Application.UseCases.Install.RepairInstanceRequest;
 
 namespace BlockiumLauncher.Host.Cli;
 
@@ -41,7 +44,11 @@ internal static class Program
             ["launch stop"] = static (serviceProvider, args, outputJson) => HandleLaunchStopAsync(serviceProvider, args, outputJson),
             ["versions vanilla"] = static (serviceProvider, args, outputJson) => HandleVersionsVanillaAsync(serviceProvider, args, outputJson),
             ["versions loaders"] = static (serviceProvider, args, outputJson) => HandleVersionsLoadersAsync(serviceProvider, args, outputJson),
-            ["diagnostics dump"] = static (serviceProvider, args, outputJson) => HandleDiagnosticsDumpAsync(serviceProvider, args, outputJson)
+            ["diagnostics dump"] = static (serviceProvider, args, outputJson) => HandleDiagnosticsDumpAsync(serviceProvider, args, outputJson),
+            ["instance content list"] = static (serviceProvider, args, outputJson) => HandleInstanceContentListAsync(serviceProvider, args, outputJson),
+            ["instance content rescan"] = static (serviceProvider, args, outputJson) => HandleInstanceContentRescanAsync(serviceProvider, args, outputJson),
+            ["instance mods disable"] = static (serviceProvider, args, outputJson) => HandleInstanceModEnabledAsync(serviceProvider, args, enabled: false, outputJson),
+            ["instance mods enable"] = static (serviceProvider, args, outputJson) => HandleInstanceModEnabledAsync(serviceProvider, args, enabled: true, outputJson)
         };
 
     public static async Task<int> Main(string[] args)
@@ -80,14 +87,30 @@ internal static class Program
             return CliExitCodes.InvalidArguments;
         }
 
-        var commandKey = args[0] + " " + args[1];
-        if (CommandHandlers.TryGetValue(commandKey, out var handler))
+        if (TryResolveCommandHandler(args, out var handler, out var consumedSegments))
         {
-            return await handler(serviceProvider, args.Skip(2).ToArray(), outputJson).ConfigureAwait(false);
+            return await handler(serviceProvider, args.Skip(consumedSegments).ToArray(), outputJson).ConfigureAwait(false);
         }
 
         WriteHelp(outputJson);
         return CliExitCodes.InvalidArguments;
+    }
+
+    private static bool TryResolveCommandHandler(string[] args, out CliCommandHandler handler, out int consumedSegments)
+    {
+        for (var segmentCount = Math.Min(3, args.Length); segmentCount >= 2; segmentCount--)
+        {
+            var commandKey = string.Join(" ", args.Take(segmentCount));
+            if (CommandHandlers.TryGetValue(commandKey, out handler!))
+            {
+                consumedSegments = segmentCount;
+                return true;
+            }
+        }
+
+        handler = default!;
+        consumedSegments = 0;
+        return false;
     }
 
     private static async Task<int> HandleAccountsListAsync(IServiceProvider serviceProvider, bool outputJson)
@@ -399,7 +422,7 @@ internal static class Program
         }
 
         var useCase = serviceProvider.GetRequiredService<RepairInstanceUseCase>();
-        var result = await useCase.ExecuteAsync(new RepairInstanceRequest
+        var result = await useCase.ExecuteAsync(new InstallRepairInstanceRequest
         {
             InstanceId = new InstanceId(instanceIdText)
         }).ConfigureAwait(false);
@@ -954,7 +977,7 @@ private static async Task<int> HandleLaunchPlanAsync(IServiceProvider servicePro
     {
         var launcherPaths = serviceProvider.GetRequiredService<ILauncherPaths>();
         var outputPath = GetOptionalOption(args, "--output");
-        var dumpDirectory = Path.Combine(launcherPaths.RootDirectory, "diagnostics");
+        var dumpDirectory = launcherPaths.DiagnosticsDirectory;
 
         Directory.CreateDirectory(dumpDirectory);
 
@@ -966,9 +989,9 @@ private static async Task<int> HandleLaunchPlanAsync(IServiceProvider servicePro
 
         Directory.CreateDirectory(logsDirectory);
 
-        var latestLogFile = Directory.GetFiles(logsDirectory, "*.jsonl")
-            .OrderByDescending(File.GetLastWriteTimeUtc)
-            .FirstOrDefault();
+        var latestLogFile = File.Exists(launcherPaths.LatestLogFilePath)
+            ? launcherPaths.LatestLogFilePath
+            : null;
 
         var recentLogLines = latestLogFile is null
             ? Array.Empty<string>()
@@ -994,6 +1017,82 @@ private static async Task<int> HandleLaunchPlanAsync(IServiceProvider servicePro
         });
 
         return CliExitCodes.Success;
+    }
+
+    private static async Task<int> HandleInstanceContentListAsync(IServiceProvider serviceProvider, string[] args, bool outputJson)
+    {
+        var instanceIdText = GetRequiredOption(args, "--instance-id");
+        if (string.IsNullOrWhiteSpace(instanceIdText))
+        {
+            WriteFailure("Cli.InvalidArguments", "Missing required option --instance-id.", outputJson);
+            return CliExitCodes.InvalidArguments;
+        }
+
+        var useCase = serviceProvider.GetRequiredService<ListInstanceContentUseCase>();
+        var result = await useCase.ExecuteAsync(new ListInstanceContentRequest
+        {
+            InstanceId = new InstanceId(instanceIdText)
+        }).ConfigureAwait(false);
+
+        if (result.IsFailure)
+        {
+            WriteFailure(result.Error.Code, result.Error.Message, outputJson);
+            return CliExitCodes.OperationFailed;
+        }
+
+        return WriteInstanceContentMetadata(result.Value, outputJson);
+    }
+
+    private static async Task<int> HandleInstanceContentRescanAsync(IServiceProvider serviceProvider, string[] args, bool outputJson)
+    {
+        var instanceIdText = GetRequiredOption(args, "--instance-id");
+        if (string.IsNullOrWhiteSpace(instanceIdText))
+        {
+            WriteFailure("Cli.InvalidArguments", "Missing required option --instance-id.", outputJson);
+            return CliExitCodes.InvalidArguments;
+        }
+
+        var useCase = serviceProvider.GetRequiredService<RescanInstanceContentUseCase>();
+        var result = await useCase.ExecuteAsync(new RescanInstanceContentRequest
+        {
+            InstanceId = new InstanceId(instanceIdText)
+        }).ConfigureAwait(false);
+
+        if (result.IsFailure)
+        {
+            WriteFailure(result.Error.Code, result.Error.Message, outputJson);
+            return CliExitCodes.OperationFailed;
+        }
+
+        return WriteInstanceContentMetadata(result.Value, outputJson);
+    }
+
+    private static async Task<int> HandleInstanceModEnabledAsync(IServiceProvider serviceProvider, string[] args, bool enabled, bool outputJson)
+    {
+        var instanceIdText = GetRequiredOption(args, "--instance-id");
+        var modReference = GetRequiredOption(args, "--mod");
+
+        if (string.IsNullOrWhiteSpace(instanceIdText) || string.IsNullOrWhiteSpace(modReference))
+        {
+            WriteFailure("Cli.InvalidArguments", "Required: --instance-id <id> --mod <name-or-relative-path>.", outputJson);
+            return CliExitCodes.InvalidArguments;
+        }
+
+        var useCase = serviceProvider.GetRequiredService<SetModEnabledUseCase>();
+        var result = await useCase.ExecuteAsync(new SetModEnabledRequest
+        {
+            InstanceId = new InstanceId(instanceIdText),
+            ModReference = modReference,
+            Enabled = enabled
+        }).ConfigureAwait(false);
+
+        if (result.IsFailure)
+        {
+            WriteFailure(result.Error.Code, result.Error.Message, outputJson);
+            return CliExitCodes.OperationFailed;
+        }
+
+        return WriteInstanceContentMetadata(result.Value, outputJson);
     }
 
     private static async Task<(bool IsFailure, int ExitCode, string? ErrorCode, string? ErrorMessage, LaunchPlanDto? Plan)> BuildLaunchPlanAsync(IServiceProvider serviceProvider, string[] args)
@@ -1268,7 +1367,11 @@ private static async Task<int> HandleLaunchPlanAsync(IServiceProvider servicePro
                 "launch stop --launch-id <guid> [--json]",
                 "versions vanilla [--type <release|snapshot|beta|alpha|experimental>] [--latest] [--json]",
                 "versions loaders --loader <fabric|quilt|forge|neoforge> --game-version <version> [--json]",
-                "diagnostics dump [--output <path>] [--json]"
+                "diagnostics dump [--output <path>] [--json]",
+                "instance content list --instance-id <id> [--json]",
+                "instance content rescan --instance-id <id> [--json]",
+                "instance mods disable --instance-id <id> --mod <name-or-relative-path> [--json]",
+                "instance mods enable --instance-id <id> --mod <name-or-relative-path> [--json]"
             }
         };
 
@@ -1322,5 +1425,30 @@ private static async Task<int> HandleLaunchPlanAsync(IServiceProvider servicePro
         }
 
         Console.Error.WriteLine(code + ": " + message);
+    }
+
+    private static int WriteInstanceContentMetadata(InstanceContentMetadata metadata, bool outputJson)
+    {
+        WriteSuccess(metadata, outputJson, lines =>
+        {
+            lines.Add($"IndexedAtUtc: {metadata.IndexedAtUtc:O}");
+            lines.Add($"IconPath: {metadata.IconPath ?? "(none)"}");
+            lines.Add($"TotalPlaytimeSeconds: {metadata.TotalPlaytimeSeconds}");
+            lines.Add($"LastLaunchAtUtc: {(metadata.LastLaunchAtUtc is null ? "(never)" : $"{metadata.LastLaunchAtUtc.Value:O}")}");
+            lines.Add($"LastLaunchPlaytimeSeconds: {(metadata.LastLaunchPlaytimeSeconds is null ? "(none)" : metadata.LastLaunchPlaytimeSeconds.ToString())}");
+            lines.Add($"Mods: {metadata.Mods.Count}");
+            lines.Add($"ResourcePacks: {metadata.ResourcePacks.Count}");
+            lines.Add($"Shaders: {metadata.Shaders.Count}");
+            lines.Add($"Worlds: {metadata.Worlds.Count}");
+            lines.Add($"Screenshots: {metadata.Screenshots.Count}");
+            lines.Add($"Servers: {metadata.Servers.Count}");
+
+            foreach (var mod in metadata.Mods)
+            {
+                lines.Add($"mod | {mod.Name} | Disabled={mod.IsDisabled} | {mod.RelativePath}");
+            }
+        });
+
+        return CliExitCodes.Success;
     }
 }

@@ -5,6 +5,7 @@ using BlockiumLauncher.Application.Abstractions.Repositories;
 using BlockiumLauncher.Application.Abstractions.Services;
 using BlockiumLauncher.Application.UseCases.Accounts;
 using BlockiumLauncher.Application.UseCases.Install;
+using BlockiumLauncher.Application.UseCases.Instances;
 using BlockiumLauncher.Application.UseCases.Java;
 using BlockiumLauncher.Application.UseCases.Launch;
 using BlockiumLauncher.Infrastructure.Auth;
@@ -40,6 +41,7 @@ public static class ServiceCollectionExtensions
         Services.AddSingleton<NeoForgeMetadataClient>();
 
         Services.AddSingleton(_ => new LauncherPaths(LauncherPaths.CreateDefault().RootDirectory));
+        Services.AddSingleton<BlockiumLauncher.Application.Abstractions.Paths.ILauncherPaths>(Provider => Provider.GetRequiredService<LauncherPaths>());
         Services.AddSingleton<ILauncherPaths>(Provider => Provider.GetRequiredService<LauncherPaths>());
         Services.AddSingleton<ILauncherDataMigrationService, LauncherDataMigrationService>();
         Services.AddSingleton<ISharedContentLayout, SharedContentLayout>();
@@ -48,6 +50,7 @@ public static class ServiceCollectionExtensions
         Services.AddSingleton<IMetadataCacheRepository, JsonMetadataCacheRepository>();
         Services.AddSingleton<IAccountRepository, JsonAccountRepository>();
         Services.AddSingleton<IInstanceRepository, JsonInstanceRepository>();
+        Services.AddSingleton<IInstanceContentMetadataRepository, JsonInstanceContentMetadataRepository>();
         Services.AddSingleton<IJavaInstallationRepository, JsonJavaInstallationRepository>();
 
         Services.AddSingleton<IVersionManifestService, CachedVersionManifestService>();
@@ -65,6 +68,9 @@ public static class ServiceCollectionExtensions
         Services.AddSingleton<IJavaDiscoveryService, JavaDiscoveryService>();
         Services.AddSingleton<IJavaRuntimeResolver, ManagedJavaRuntimeResolver>();
         Services.AddSingleton<IJavaRequirementResolver, JavaRequirementResolver>();
+        Services.AddSingleton<IInstanceContentIndexer, FileSystemInstanceContentIndexer>();
+        Services.AddSingleton<IInstanceContentMetadataService, InstanceContentMetadataService>();
+        Services.AddSingleton<ILaunchSessionObserver, InstanceLaunchSessionObserver>();
 
         Services.AddTransient<DiscoverJavaUseCase>();
         Services.AddTransient<ValidateJavaUseCase>();
@@ -98,6 +104,9 @@ public static class ServiceCollectionExtensions
         Services.AddTransient<LaunchInstanceUseCase>();
         Services.AddTransient<GetLaunchStatusUseCase>();
         Services.AddTransient<StopLaunchUseCase>();
+        Services.AddTransient<ListInstanceContentUseCase>();
+        Services.AddTransient<RescanInstanceContentUseCase>();
+        Services.AddTransient<SetModEnabledUseCase>();
 
         Services.AddTransient<AddAccountUseCase>();
         Services.AddTransient<ListAccountsUseCase>();

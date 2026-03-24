@@ -2,7 +2,9 @@ using System;
 using System.IO;
 using System.Threading;
 using System.Threading.Tasks;
+using BlockiumLauncher.Application.Abstractions.Paths;
 using BlockiumLauncher.Application.Abstractions.Repositories;
+using BlockiumLauncher.Application.Abstractions.Services;
 using BlockiumLauncher.Application.Abstractions.Storage;
 using BlockiumLauncher.Domain.Entities;
 using BlockiumLauncher.Domain.Enums;
@@ -16,15 +18,21 @@ public sealed class ImportInstanceUseCase
     private readonly ITempWorkspaceFactory TempWorkspaceFactory;
     private readonly IFileTransaction FileTransaction;
     private readonly IInstanceRepository InstanceRepository;
+    private readonly ILauncherPaths LauncherPaths;
+    private readonly IInstanceContentMetadataService InstanceContentMetadataService;
 
     public ImportInstanceUseCase(
         ITempWorkspaceFactory TempWorkspaceFactory,
         IFileTransaction FileTransaction,
-        IInstanceRepository InstanceRepository)
+        IInstanceRepository InstanceRepository,
+        ILauncherPaths LauncherPaths,
+        IInstanceContentMetadataService InstanceContentMetadataService)
     {
         this.TempWorkspaceFactory = TempWorkspaceFactory ?? throw new ArgumentNullException(nameof(TempWorkspaceFactory));
         this.FileTransaction = FileTransaction ?? throw new ArgumentNullException(nameof(FileTransaction));
         this.InstanceRepository = InstanceRepository ?? throw new ArgumentNullException(nameof(InstanceRepository));
+        this.LauncherPaths = LauncherPaths ?? throw new ArgumentNullException(nameof(LauncherPaths));
+        this.InstanceContentMetadataService = InstanceContentMetadataService ?? throw new ArgumentNullException(nameof(InstanceContentMetadataService));
     }
 
     public async Task<Result<ImportInstanceResult>> ExecuteAsync(
@@ -58,7 +66,7 @@ public sealed class ImportInstanceUseCase
                 return Result<ImportInstanceResult>.Failure(InstallErrors.ImportInvalidStructure);
             }
 
-            var TargetDirectory = ResolveTargetDirectory(Request);
+            var TargetDirectory = ResolveTargetDirectory(Request, LauncherPaths);
             if (Directory.Exists(TargetDirectory))
             {
                 return Result<ImportInstanceResult>.Failure(InstallErrors.InstanceAlreadyExists);
@@ -113,6 +121,7 @@ public sealed class ImportInstanceUseCase
                 null);
 
             await InstanceRepository.SaveAsync(Instance, CancellationToken).ConfigureAwait(false);
+            await InstanceContentMetadataService.ReindexAsync(Instance, CancellationToken).ConfigureAwait(false);
 
             return Result<ImportInstanceResult>.Success(new ImportInstanceResult
             {
@@ -145,20 +154,14 @@ public sealed class ImportInstanceUseCase
         return VersionId.Parse(Value);
     }
 
-    private static string ResolveTargetDirectory(ImportInstanceRequest Request)
+    private static string ResolveTargetDirectory(ImportInstanceRequest Request, ILauncherPaths launcherPaths)
     {
         if (!string.IsNullOrWhiteSpace(Request.TargetDirectory))
         {
             return Path.GetFullPath(Request.TargetDirectory.Trim());
         }
 
-        var SafeName = string.Join(
-            "_",
-            Request.InstanceName
-                .Trim()
-                .Split(Path.GetInvalidFileNameChars(), StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries));
-
-        return Path.GetFullPath(Path.Combine(Environment.CurrentDirectory, "instances", SafeName));
+        return Path.GetFullPath(launcherPaths.GetDefaultInstanceDirectory(Request.InstanceName));
     }
 
     private static bool LooksLikeInstanceDirectory(string SourceDirectory)

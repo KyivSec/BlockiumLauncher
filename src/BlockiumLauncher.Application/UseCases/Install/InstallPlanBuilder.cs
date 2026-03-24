@@ -3,6 +3,7 @@ using System.IO;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
+using BlockiumLauncher.Application.Abstractions.Paths;
 using BlockiumLauncher.Application.Abstractions.Services;
 using BlockiumLauncher.Application.UseCases.Common;
 using BlockiumLauncher.Domain.Enums;
@@ -15,13 +16,16 @@ public sealed class InstallPlanBuilder
 {
     private readonly IVersionManifestService VersionManifestService;
     private readonly ILoaderMetadataService LoaderMetadataService;
+    private readonly ILauncherPaths LauncherPaths;
 
     public InstallPlanBuilder(
         IVersionManifestService VersionManifestService,
-        ILoaderMetadataService LoaderMetadataService)
+        ILoaderMetadataService LoaderMetadataService,
+        ILauncherPaths LauncherPaths)
     {
         this.VersionManifestService = VersionManifestService ?? throw new ArgumentNullException(nameof(VersionManifestService));
         this.LoaderMetadataService = LoaderMetadataService ?? throw new ArgumentNullException(nameof(LoaderMetadataService));
+        this.LauncherPaths = LauncherPaths ?? throw new ArgumentNullException(nameof(LauncherPaths));
     }
 
     public async Task<Result<InstallPlan>> BuildAsync(
@@ -36,7 +40,7 @@ public sealed class InstallPlanBuilder
                 return Result<InstallPlan>.Failure(InstallErrors.InvalidRequest);
             }
 
-            var TargetDirectory = ResolveTargetDirectory(Request);
+            var TargetDirectory = ResolveTargetDirectory(Request, LauncherPaths);
             if (string.IsNullOrWhiteSpace(TargetDirectory))
             {
                 return Result<InstallPlan>.Failure(InstallErrors.TargetPathInvalid);
@@ -110,20 +114,14 @@ public sealed class InstallPlanBuilder
         }
     }
 
-    private static string ResolveTargetDirectory(InstallInstanceRequest Request)
+    private static string ResolveTargetDirectory(InstallInstanceRequest Request, ILauncherPaths launcherPaths)
     {
         if (!string.IsNullOrWhiteSpace(Request.TargetDirectory))
         {
             return Path.GetFullPath(Request.TargetDirectory.Trim());
         }
 
-        var SafeName = SanitizeInstanceDirectoryName(Request.InstanceName);
-        var RootDirectory = LauncherRootHelper.GetDefaultLauncherRoot();
-        var InstancesDirectory = Path.Combine(RootDirectory, "instances");
-
-        Directory.CreateDirectory(InstancesDirectory);
-
-        return Path.GetFullPath(Path.Combine(InstancesDirectory, SafeName));
+        return Path.GetFullPath(launcherPaths.GetDefaultInstanceDirectory(Request.InstanceName));
     }
 
     private static string SanitizeInstanceDirectoryName(string Value)
@@ -204,31 +202,4 @@ public sealed class InstallPlanBuilder
         return VersionId.Parse(Value);
     }
 
-    private static class LauncherRootHelper
-    {
-        public static string GetDefaultLauncherRoot()
-        {
-            if (OperatingSystem.IsWindows())
-            {
-                return Path.Combine(
-                    Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
-                    "BlockiumLauncher");
-            }
-
-            if (OperatingSystem.IsMacOS())
-            {
-                var Home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
-                return Path.Combine(Home, "Library", "Application Support", "BlockiumLauncher");
-            }
-
-            var XdgDataHome = Environment.GetEnvironmentVariable("XDG_DATA_HOME");
-            if (!string.IsNullOrWhiteSpace(XdgDataHome))
-            {
-                return Path.Combine(XdgDataHome, "BlockiumLauncher");
-            }
-
-            var UserHome = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
-            return Path.Combine(UserHome, ".local", "share", "BlockiumLauncher");
-        }
-    }
 }

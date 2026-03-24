@@ -10,14 +10,25 @@ namespace BlockiumLauncher.Infrastructure.Launch;
 public sealed class LaunchProcessRunner : ILaunchProcessRunner
 {
     private readonly ConcurrentDictionary<Guid, LaunchSession> Sessions = new();
+    private readonly ILaunchSessionObserver Observer;
 
-    public Task<Result<LaunchInstanceResult>> StartAsync(LaunchPlanDto Plan, CancellationToken CancellationToken = default)
+    public LaunchProcessRunner()
+        : this(NullLaunchSessionObserver.Instance)
+    {
+    }
+
+    public LaunchProcessRunner(ILaunchSessionObserver Observer)
+    {
+        this.Observer = Observer ?? throw new ArgumentNullException(nameof(Observer));
+    }
+
+    public async Task<Result<LaunchInstanceResult>> StartAsync(LaunchPlanDto Plan, CancellationToken CancellationToken = default)
     {
         try
         {
             if (Plan is null || string.IsNullOrWhiteSpace(Plan.JavaExecutablePath))
             {
-                return Task.FromResult(Result<LaunchInstanceResult>.Failure(LaunchErrors.ProcessStartFailed));
+                return Result<LaunchInstanceResult>.Failure(LaunchErrors.ProcessStartFailed);
             }
 
             var JavaPath = NormalizeJavaExecutablePath(Plan.JavaExecutablePath);
@@ -60,7 +71,7 @@ public sealed class LaunchProcessRunner : ILaunchProcessRunner
 
             if (!Sessions.TryAdd(LaunchId, Session))
             {
-                return Task.FromResult(Result<LaunchInstanceResult>.Failure(LaunchErrors.ProcessStartFailed));
+                return Result<LaunchInstanceResult>.Failure(LaunchErrors.ProcessStartFailed);
             }
 
             Process.OutputDataReceived += (_, Args) =>
@@ -82,6 +93,12 @@ public sealed class LaunchProcessRunner : ILaunchProcessRunner
             Process.Exited += (_, _) =>
             {
                 Session.MarkExitedSafe();
+                _ = Observer.OnExitedAsync(
+                    Session.LaunchId,
+                    Session.Plan.InstanceId,
+                    Session.StartedAtUtc ?? DateTimeOffset.UtcNow,
+                    Session.ExitedAtUtc ?? DateTimeOffset.UtcNow,
+                    Session.ExitCode);
             };
 
             var Started = Process.Start();
@@ -89,18 +106,19 @@ public sealed class LaunchProcessRunner : ILaunchProcessRunner
             {
                 Sessions.TryRemove(LaunchId, out _);
                 Process.Dispose();
-                return Task.FromResult(Result<LaunchInstanceResult>.Failure(LaunchErrors.ProcessStartFailed));
+                return Result<LaunchInstanceResult>.Failure(LaunchErrors.ProcessStartFailed);
             }
 
             Session.MarkStarted(Process.Id);
             Process.BeginOutputReadLine();
             Process.BeginErrorReadLine();
+            await Observer.OnStartedAsync(LaunchId, Plan.InstanceId, Session.StartedAtUtc ?? DateTimeOffset.UtcNow, CancellationToken).ConfigureAwait(false);
 
-            return Task.FromResult(Result<LaunchInstanceResult>.Success(Session.ToResult()));
+            return Result<LaunchInstanceResult>.Success(Session.ToResult());
         }
         catch
         {
-            return Task.FromResult(Result<LaunchInstanceResult>.Failure(LaunchErrors.ProcessStartFailed));
+            return Result<LaunchInstanceResult>.Failure(LaunchErrors.ProcessStartFailed);
         }
     }
 
@@ -176,6 +194,8 @@ public sealed class LaunchProcessRunner : ILaunchProcessRunner
         public LaunchPlanDto Plan { get; }
         public Process Process { get; }
         public int? ProcessId { get; private set; }
+        public DateTimeOffset? StartedAtUtc { get; private set; }
+        public DateTimeOffset? ExitedAtUtc { get; private set; }
         public bool IsRunning { get; private set; }
         public bool HasExited { get; private set; }
         public int? ExitCode { get; private set; }
@@ -192,6 +212,7 @@ public sealed class LaunchProcessRunner : ILaunchProcessRunner
             lock (Sync)
             {
                 this.ProcessId = ProcessId;
+                StartedAtUtc = DateTimeOffset.UtcNow;
                 IsRunning = true;
                 HasExited = false;
             }
@@ -250,6 +271,7 @@ public sealed class LaunchProcessRunner : ILaunchProcessRunner
                 }
 
                 ExitCode = ExitCodeValue;
+                ExitedAtUtc = DateTimeOffset.UtcNow;
                 IsRunning = false;
                 HasExited = true;
             }
