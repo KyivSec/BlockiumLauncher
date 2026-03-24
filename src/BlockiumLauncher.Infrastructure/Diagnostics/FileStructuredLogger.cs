@@ -13,7 +13,7 @@ public sealed class FileStructuredLogger : IStructuredLogger
     {
         this.SecretRedactor = SecretRedactor ?? throw new ArgumentNullException(nameof(SecretRedactor));
         LogsDirectory = Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
             "BlockiumLauncher",
             "logs");
     }

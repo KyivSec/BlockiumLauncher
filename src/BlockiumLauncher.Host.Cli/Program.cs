@@ -340,7 +340,7 @@ internal static class Program
             loaderVersion = latestLoaderVersionResult.Value;
         }
 
-        Console.WriteLine("Install started. Logs are being written to %APPDATA%\\BlockiumLauncher\\logs.");
+        Console.WriteLine("Install started. Logs are being written to %APPDATALOCAL%\\BlockiumLauncher\\logs.");
 
         var useCase = serviceProvider.GetRequiredService<InstallInstanceUseCase>();
         var result = await useCase.ExecuteAsync(new InstallInstanceRequest

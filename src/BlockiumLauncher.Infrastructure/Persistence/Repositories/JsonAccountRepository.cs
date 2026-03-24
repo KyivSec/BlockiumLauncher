@@ -17,7 +17,7 @@ public sealed class JsonAccountRepository : IAccountRepository
         this.JsonFileStore = JsonFileStore ?? throw new ArgumentNullException(nameof(JsonFileStore));
 
         AccountsFilePath = Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
             "BlockiumLauncher",
             "accounts.json");
     }
