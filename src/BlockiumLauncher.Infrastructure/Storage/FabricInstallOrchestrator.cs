@@ -91,7 +91,14 @@ public sealed class FabricInstallOrchestrator : IFabricInstallOrchestrator
             await JsonSerializer.SerializeAsync(stream, snapshot, cancellationToken: cancellationToken);
         }
 
-        return await FallbackPreparer.PrepareAsync(plan, workspace, cancellationToken).ConfigureAwait(false);
+        var prepareResult = await FallbackPreparer.PrepareAsync(plan, workspace, cancellationToken).ConfigureAwait(false);
+
+        if (prepareResult.IsSuccess && File.Exists(snapshotPath))
+        {
+            File.Delete(snapshotPath);
+        }
+
+        return prepareResult;
     }
 
     private sealed record FabricPlanSnapshot(

@@ -114,6 +114,7 @@ public sealed class InstallInstanceUseCase
                 null);
 
             await InstanceRepository.SaveAsync(Instance, CancellationToken).ConfigureAwait(false);
+            CleanupRedundantInstallArtifacts(Plan.TargetDirectory);
 
             return Result<InstallInstanceResult>.Success(new InstallInstanceResult
             {
@@ -193,6 +194,39 @@ public sealed class InstallInstanceUseCase
         };
     }
 
+
+    private static void CleanupRedundantInstallArtifacts(string targetDirectory)
+    {
+        if (string.IsNullOrWhiteSpace(targetDirectory) || !Directory.Exists(targetDirectory))
+        {
+            return;
+        }
+
+        var legacyMinecraftDirectory = Path.Combine(targetDirectory, ".minecraft");
+        if (!Directory.Exists(legacyMinecraftDirectory))
+        {
+            return;
+        }
+
+        DeleteDirectoryIfEmpty(Path.Combine(legacyMinecraftDirectory, "config"));
+        DeleteDirectoryIfEmpty(Path.Combine(legacyMinecraftDirectory, "mods"));
+        DeleteDirectoryIfEmpty(legacyMinecraftDirectory);
+    }
+
+    private static void DeleteDirectoryIfEmpty(string path)
+    {
+        if (!Directory.Exists(path))
+        {
+            return;
+        }
+
+        if (Directory.EnumerateFileSystemEntries(path).Any())
+        {
+            return;
+        }
+
+        Directory.Delete(path, recursive: false);
+    }
     private static VersionId CreateVersionId(string Value)
     {
         var Type = typeof(VersionId);
