@@ -4,10 +4,10 @@ using BlockiumLauncher.Shared.Results;
 
 namespace BlockiumLauncher.Infrastructure.Auth;
 
-public sealed class PlaceholderMicrosoftAuthProvider : IMicrosoftAuthProvider
+public sealed class NotConfiguredMicrosoftAuthProvider : IMicrosoftAuthProvider
 {
     public Task<Result<MicrosoftAuthResult>> SignInAsync(CancellationToken CancellationToken = default)
     {
-        return Task.FromResult(Result<MicrosoftAuthResult>.Failure(AccountErrors.PersistenceFailed));
+        return Task.FromResult(Result<MicrosoftAuthResult>.Failure(AccountErrors.MicrosoftAuthNotConfigured));
     }
 }

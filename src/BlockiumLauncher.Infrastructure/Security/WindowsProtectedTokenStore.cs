@@ -7,6 +7,7 @@ using System.Threading.Tasks;
 using BlockiumLauncher.Application.Abstractions.Security;
 using BlockiumLauncher.Application.UseCases.Accounts;
 using BlockiumLauncher.Domain.ValueObjects;
+using BlockiumLauncher.Infrastructure.Persistence.Paths;
 using BlockiumLauncher.Shared.Results;
 
 namespace BlockiumLauncher.Infrastructure.Security;
@@ -16,12 +17,16 @@ public sealed class WindowsProtectedTokenStore : ITokenStore
     private readonly string RootDirectoryPath;
 
     public WindowsProtectedTokenStore(string? RootDirectoryPath = null)
+        : this(LauncherPaths.CreateDefault(), RootDirectoryPath)
     {
+    }
+
+    public WindowsProtectedTokenStore(ILauncherPaths launcherPaths, string? RootDirectoryPath = null)
+    {
+        ArgumentNullException.ThrowIfNull(launcherPaths);
+
         this.RootDirectoryPath = string.IsNullOrWhiteSpace(RootDirectoryPath)
-            ? Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
-                "BlockiumLauncher",
-                "Tokens")
+            ? Path.Combine(launcherPaths.DataDirectory, "tokens")
             : Path.GetFullPath(RootDirectoryPath);
     }
 

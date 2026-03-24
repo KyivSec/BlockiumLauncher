@@ -18,4 +18,14 @@ public readonly record struct VersionId
     {
         return Value;
     }
+
+    public static VersionId Parse(string value)
+    {
+        return new VersionId(value);
+    }
+
+    public static VersionId Create(string value)
+    {
+        return Parse(value);
+    }
 }

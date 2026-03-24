@@ -64,11 +64,25 @@ public sealed class JsonJavaInstallationRepository : IJavaInstallationRepository
 
     private static StoredJavaInstallation MapFromDomain(JavaInstallation JavaInstallation)
     {
-        throw new NotImplementedException("Wire this mapper to your real Stage 3 JavaInstallation API.");
+        return new StoredJavaInstallation
+        {
+            JavaInstallationId = JavaInstallation.JavaInstallationId.ToString(),
+            ExecutablePath = JavaInstallation.ExecutablePath,
+            Version = JavaInstallation.Version,
+            Architecture = JavaInstallation.Architecture,
+            Vendor = JavaInstallation.Vendor,
+            IsValid = JavaInstallation.IsValid
+        };
     }
 
     private static JavaInstallation MapToDomain(StoredJavaInstallation Stored)
     {
-        throw new NotImplementedException("Wire this mapper to your real Stage 3 JavaInstallation API.");
+        return JavaInstallation.Create(
+            new JavaInstallationId(Stored.JavaInstallationId),
+            Stored.ExecutablePath,
+            Stored.Version,
+            Stored.Architecture,
+            Stored.Vendor,
+            Stored.IsValid);
     }
 }

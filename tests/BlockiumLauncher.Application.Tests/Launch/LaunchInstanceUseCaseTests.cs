@@ -28,7 +28,7 @@ public sealed class LaunchInstanceUseCaseTests
             new FakeLoaderMetadataService());
 
         var Runner = new FakeLaunchProcessRunner(Result<LaunchInstanceResult>.Failure(LaunchErrors.ProcessStartFailed));
-        var UseCase = new LaunchInstanceUseCase(BuildLaunchPlanUseCase, Runner, new FakeInstanceRepository());
+        var UseCase = new LaunchInstanceUseCase(BuildLaunchPlanUseCase, Runner);
 
         var Result = await UseCase.ExecuteAsync(new LaunchInstanceRequest
         {
@@ -89,7 +89,7 @@ public sealed class LaunchInstanceUseCaseTests
             });
 
             var Runner = new FakeLaunchProcessRunner(RunnerResult);
-            var UseCase = new LaunchInstanceUseCase(BuildLaunchPlanUseCase, Runner, new FakeInstanceRepository());
+            var UseCase = new LaunchInstanceUseCase(BuildLaunchPlanUseCase, Runner);
 
             var Result = await UseCase.ExecuteAsync(new LaunchInstanceRequest
             {

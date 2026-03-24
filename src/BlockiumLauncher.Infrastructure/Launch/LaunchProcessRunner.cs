@@ -3,7 +3,6 @@ using System.Diagnostics;
 using BlockiumLauncher.Application.Abstractions.Launch;
 using BlockiumLauncher.Application.UseCases.Launch;
 using BlockiumLauncher.Contracts.Launch;
-using BlockiumLauncher.Shared.Errors;
 using BlockiumLauncher.Shared.Results;
 
 namespace BlockiumLauncher.Infrastructure.Launch;
@@ -12,13 +11,13 @@ public sealed class LaunchProcessRunner : ILaunchProcessRunner
 {
     private readonly ConcurrentDictionary<Guid, LaunchSession> Sessions = new();
 
-    public async Task<Result<LaunchInstanceResult>> StartAsync(LaunchPlanDto Plan, CancellationToken CancellationToken = default)
+    public Task<Result<LaunchInstanceResult>> StartAsync(LaunchPlanDto Plan, CancellationToken CancellationToken = default)
     {
         try
         {
             if (Plan is null || string.IsNullOrWhiteSpace(Plan.JavaExecutablePath))
             {
-                return Result<LaunchInstanceResult>.Failure(LaunchErrors.ProcessStartFailed);
+                return Task.FromResult(Result<LaunchInstanceResult>.Failure(LaunchErrors.ProcessStartFailed));
             }
 
             var JavaPath = NormalizeJavaExecutablePath(Plan.JavaExecutablePath);
@@ -61,7 +60,7 @@ public sealed class LaunchProcessRunner : ILaunchProcessRunner
 
             if (!Sessions.TryAdd(LaunchId, Session))
             {
-                return Result<LaunchInstanceResult>.Failure(LaunchErrors.ProcessStartFailed);
+                return Task.FromResult(Result<LaunchInstanceResult>.Failure(LaunchErrors.ProcessStartFailed));
             }
 
             Process.OutputDataReceived += (_, Args) =>
@@ -90,44 +89,18 @@ public sealed class LaunchProcessRunner : ILaunchProcessRunner
             {
                 Sessions.TryRemove(LaunchId, out _);
                 Process.Dispose();
-                return Result<LaunchInstanceResult>.Failure(LaunchErrors.ProcessStartFailed);
+                return Task.FromResult(Result<LaunchInstanceResult>.Failure(LaunchErrors.ProcessStartFailed));
             }
 
             Session.MarkStarted(Process.Id);
             Process.BeginOutputReadLine();
             Process.BeginErrorReadLine();
 
-            await Task.Delay(2000, CancellationToken).ConfigureAwait(false);
-            Session.RefreshState();
-
-            if (Session.HasExited)
-            {
-                var OutputPreview = string.Join(
-                    Environment.NewLine,
-                    Session.GetOutputLines()
-                        .TakeLast(60)
-                        .Select(x => $"[{x.Stream}] {x.Message}"));
-
-                Sessions.TryRemove(LaunchId, out _);
-                Process.Dispose();
-
-                return Result<LaunchInstanceResult>.Failure(
-                    new Error(
-                        "Launch.ProcessExitedEarly",
-                        "The launched process exited immediately." + Environment.NewLine +
-                        "ExitCode: " + (Session.ExitCode?.ToString() ?? "<null>") + Environment.NewLine +
-                        "Java: " + JavaPath + Environment.NewLine +
-                        "MainClass: " + Plan.MainClass + Environment.NewLine +
-                        "JvmArgumentCount: " + Plan.JvmArguments.Count + Environment.NewLine +
-                        "GameArgumentCount: " + Plan.GameArguments.Count + Environment.NewLine +
-                        "RecentOutput:" + Environment.NewLine + OutputPreview));
-            }
-
-            return Result<LaunchInstanceResult>.Success(Session.ToResult());
+            return Task.FromResult(Result<LaunchInstanceResult>.Success(Session.ToResult()));
         }
         catch
         {
-            return Result<LaunchInstanceResult>.Failure(LaunchErrors.ProcessStartFailed);
+            return Task.FromResult(Result<LaunchInstanceResult>.Failure(LaunchErrors.ProcessStartFailed));
         }
     }
 

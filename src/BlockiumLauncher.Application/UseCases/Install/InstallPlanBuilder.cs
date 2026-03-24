@@ -1,12 +1,10 @@
 using System;
-using System.Collections;
-using System.Collections.Generic;
 using System.IO;
 using System.Linq;
-using System.Reflection;
 using System.Threading;
 using System.Threading.Tasks;
 using BlockiumLauncher.Application.Abstractions.Services;
+using BlockiumLauncher.Application.UseCases.Common;
 using BlockiumLauncher.Domain.Enums;
 using BlockiumLauncher.Domain.ValueObjects;
 using BlockiumLauncher.Shared.Results;
@@ -152,13 +150,13 @@ public sealed class InstallPlanBuilder
 
     private async Task<bool> TryValidateGameVersionAsync(string GameVersion, CancellationToken CancellationToken)
     {
-        var Values = await CollectValuesAsync(VersionManifestService, CancellationToken).ConfigureAwait(false);
-        if (Values.Count == 0)
+        var Result = await VersionManifestService.GetAvailableVersionsAsync(CancellationToken).ConfigureAwait(false);
+        if (Result.IsFailure)
         {
             return true;
         }
 
-        return Values.Any(Value => MatchesVersion(Value, GameVersion));
+        return Result.Value.Any(Value => MatchesVersion(Value, GameVersion));
     }
 
     private async Task<bool> TryValidateLoaderVersionAsync(LoaderType LoaderType, string GameVersion, string LoaderVersion, CancellationToken CancellationToken)
@@ -180,108 +178,6 @@ public sealed class InstallPlanBuilder
             string.Equals(Value.LoaderVersion, LoaderVersion, StringComparison.OrdinalIgnoreCase));
     }
 
-    private static async Task<List<object?>> CollectValuesAsync(object Service, CancellationToken CancellationToken)
-    {
-        var Results = new List<object?>();
-
-        var Methods = Service.GetType()
-            .GetMethods(BindingFlags.Instance | BindingFlags.Public)
-            .Where(Method => Method.ReturnType != typeof(void))
-            .Where(Method => Method.Name.Contains("List", StringComparison.OrdinalIgnoreCase) ||
-                             Method.Name.Contains("Get", StringComparison.OrdinalIgnoreCase) ||
-                             Method.Name.Contains("Fetch", StringComparison.OrdinalIgnoreCase) ||
-                             Method.Name.Contains("Load", StringComparison.OrdinalIgnoreCase))
-            .ToArray();
-
-        foreach (var Method in Methods)
-        {
-            var Parameters = Method.GetParameters();
-            var Arguments = new object?[Parameters.Length];
-            var Valid = true;
-
-            for (var Index = 0; Index < Parameters.Length; Index++)
-            {
-                var Parameter = Parameters[Index];
-
-                if (Parameter.ParameterType == typeof(CancellationToken))
-                {
-                    Arguments[Index] = CancellationToken;
-                    continue;
-                }
-
-                if (Parameter.HasDefaultValue)
-                {
-                    Arguments[Index] = Parameter.DefaultValue;
-                    continue;
-                }
-
-                Valid = false;
-                break;
-            }
-
-            if (!Valid)
-            {
-                continue;
-            }
-
-            try
-            {
-                var InvocationResult = Method.Invoke(Service, Arguments);
-                if (InvocationResult is Task TaskResult)
-                {
-                    await TaskResult.ConfigureAwait(false);
-                    InvocationResult = GetTaskResult(TaskResult);
-                }
-
-                FlattenValue(InvocationResult, Results);
-            }
-            catch
-            {
-            }
-        }
-
-        return Results;
-    }
-
-    private static object? GetTaskResult(Task TaskResult)
-    {
-        return TaskResult.GetType().GetProperty("Result", BindingFlags.Instance | BindingFlags.Public)?.GetValue(TaskResult);
-    }
-
-    private static void FlattenValue(object? Value, List<object?> Results)
-    {
-        if (Value is null)
-        {
-            return;
-        }
-
-        var Type = Value.GetType();
-        if (Type.IsGenericType && Type.Name.StartsWith("Result", StringComparison.OrdinalIgnoreCase))
-        {
-            var ValueProperty = Type.GetProperty("Value", BindingFlags.Instance | BindingFlags.Public);
-            FlattenValue(ValueProperty?.GetValue(Value), Results);
-            return;
-        }
-
-        if (Value is string)
-        {
-            Results.Add(Value);
-            return;
-        }
-
-        if (Value is IEnumerable EnumerableValue)
-        {
-            foreach (var Item in EnumerableValue)
-            {
-                FlattenValue(Item, Results);
-            }
-
-            return;
-        }
-
-        Results.Add(Value);
-    }
-
     private static bool MatchesVersion(object? Value, string GameVersion)
     {
         if (Value is null)
@@ -294,45 +190,18 @@ public sealed class InstallPlanBuilder
             return string.Equals(Text, GameVersion, StringComparison.OrdinalIgnoreCase);
         }
 
-        var Type = Value.GetType();
-        foreach (var PropertyName in new[] { "Version", "Id", "Name" })
+        if (Value is VersionSummary Summary)
         {
-            var Property = Type.GetProperty(PropertyName, BindingFlags.Instance | BindingFlags.Public | BindingFlags.IgnoreCase);
-            var PropertyValue = Property?.GetValue(Value)?.ToString();
-            if (string.Equals(PropertyValue, GameVersion, StringComparison.OrdinalIgnoreCase))
-            {
-                return true;
-            }
+            return string.Equals(Summary.VersionId.ToString(), GameVersion, StringComparison.OrdinalIgnoreCase)
+                || string.Equals(Summary.DisplayName, GameVersion, StringComparison.OrdinalIgnoreCase);
         }
 
-        var VersionIdProperty = Type.GetProperty("VersionId", BindingFlags.Instance | BindingFlags.Public | BindingFlags.IgnoreCase);
-        var VersionIdValue = VersionIdProperty?.GetValue(Value)?.ToString();
-        return string.Equals(VersionIdValue, GameVersion, StringComparison.OrdinalIgnoreCase);
+        return false;
     }
 
     private static VersionId CreateVersionId(string Value)
     {
-        var Type = typeof(VersionId);
-
-        var ParseMethod = Type.GetMethod("Parse", BindingFlags.Public | BindingFlags.Static, null, new[] { typeof(string) }, null);
-        if (ParseMethod is not null)
-        {
-            return (VersionId)ParseMethod.Invoke(null, new object[] { Value })!;
-        }
-
-        var CreateMethod = Type.GetMethod("Create", BindingFlags.Public | BindingFlags.Static, null, new[] { typeof(string) }, null);
-        if (CreateMethod is not null)
-        {
-            return (VersionId)CreateMethod.Invoke(null, new object[] { Value })!;
-        }
-
-        var Constructor = Type.GetConstructor(new[] { typeof(string) });
-        if (Constructor is not null)
-        {
-            return (VersionId)Constructor.Invoke(new object[] { Value });
-        }
-
-        throw new InvalidOperationException("Could not create VersionId from string.");
+        return VersionId.Parse(Value);
     }
 
     private static class LauncherRootHelper

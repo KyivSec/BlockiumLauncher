@@ -229,38 +229,6 @@ public sealed class InstallInstanceUseCase
     }
     private static VersionId CreateVersionId(string Value)
     {
-        var Type = typeof(VersionId);
-
-        var ParseMethod = Type.GetMethod(
-            "Parse",
-            System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static,
-            null,
-            new[] { typeof(string) },
-            null);
-
-        if (ParseMethod is not null)
-        {
-            return (VersionId)ParseMethod.Invoke(null, new object[] { Value })!;
-        }
-
-        var CreateMethod = Type.GetMethod(
-            "Create",
-            System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static,
-            null,
-            new[] { typeof(string) },
-            null);
-
-        if (CreateMethod is not null)
-        {
-            return (VersionId)CreateMethod.Invoke(null, new object[] { Value })!;
-        }
-
-        var Constructor = Type.GetConstructor(new[] { typeof(string) });
-        if (Constructor is not null)
-        {
-            return (VersionId)Constructor.Invoke(new object[] { Value });
-        }
-
-        throw new InvalidOperationException("Could not create VersionId from string.");
+        return VersionId.Parse(Value);
     }
 }

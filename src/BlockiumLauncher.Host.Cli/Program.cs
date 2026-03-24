@@ -17,10 +17,32 @@ namespace BlockiumLauncher.Host.Cli;
 
 internal static class Program
 {
+    private delegate Task<int> CliCommandHandler(IServiceProvider serviceProvider, string[] args, bool outputJson);
+
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
         WriteIndented = true
     };
+
+    private static readonly IReadOnlyDictionary<string, CliCommandHandler> CommandHandlers =
+        new Dictionary<string, CliCommandHandler>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["accounts list"] = static (serviceProvider, _, outputJson) => HandleAccountsListAsync(serviceProvider, outputJson),
+            ["accounts add-offline"] = static (serviceProvider, args, outputJson) => HandleAccountsAddOfflineAsync(serviceProvider, args, outputJson),
+            ["accounts set-default"] = static (serviceProvider, args, outputJson) => HandleAccountsSetDefaultAsync(serviceProvider, args, outputJson),
+            ["accounts remove"] = static (serviceProvider, args, outputJson) => HandleAccountsRemoveAsync(serviceProvider, args, outputJson),
+            ["instances install"] = static (serviceProvider, args, outputJson) => HandleInstancesInstallAsync(serviceProvider, args, outputJson),
+            ["instances verify"] = static (serviceProvider, args, outputJson) => HandleInstancesVerifyAsync(serviceProvider, args, outputJson),
+            ["instances repair"] = static (serviceProvider, args, outputJson) => HandleInstancesRepairAsync(serviceProvider, args, outputJson),
+            ["instances start"] = static (serviceProvider, args, outputJson) => HandleInstancesStartAsync(serviceProvider, args, outputJson),
+            ["launch plan"] = static (serviceProvider, args, outputJson) => HandleLaunchPlanAsync(serviceProvider, args, outputJson),
+            ["launch run"] = static (serviceProvider, args, outputJson) => HandleLaunchRunAsync(serviceProvider, args, outputJson),
+            ["launch status"] = static (serviceProvider, args, outputJson) => HandleLaunchStatusAsync(serviceProvider, args, outputJson),
+            ["launch stop"] = static (serviceProvider, args, outputJson) => HandleLaunchStopAsync(serviceProvider, args, outputJson),
+            ["versions vanilla"] = static (serviceProvider, args, outputJson) => HandleVersionsVanillaAsync(serviceProvider, args, outputJson),
+            ["versions loaders"] = static (serviceProvider, args, outputJson) => HandleVersionsLoadersAsync(serviceProvider, args, outputJson),
+            ["diagnostics dump"] = static (serviceProvider, args, outputJson) => HandleDiagnosticsDumpAsync(serviceProvider, args, outputJson)
+        };
 
     public static async Task<int> Main(string[] args)
     {
@@ -52,79 +74,16 @@ internal static class Program
 
     private static async Task<int> DispatchAsync(IServiceProvider serviceProvider, string[] args, bool outputJson)
     {
-        if (args.Length >= 2 && Is(args[0], "accounts") && Is(args[1], "list"))
+        if (args.Length < 2)
         {
-            return await HandleAccountsListAsync(serviceProvider, outputJson).ConfigureAwait(false);
+            WriteHelp(outputJson);
+            return CliExitCodes.InvalidArguments;
         }
 
-        if (args.Length >= 2 && Is(args[0], "accounts") && Is(args[1], "add-offline"))
+        var commandKey = args[0] + " " + args[1];
+        if (CommandHandlers.TryGetValue(commandKey, out var handler))
         {
-            return await HandleAccountsAddOfflineAsync(serviceProvider, args.Skip(2).ToArray(), outputJson).ConfigureAwait(false);
-        }
-
-        if (args.Length >= 2 && Is(args[0], "accounts") && Is(args[1], "set-default"))
-        {
-            return await HandleAccountsSetDefaultAsync(serviceProvider, args.Skip(2).ToArray(), outputJson).ConfigureAwait(false);
-        }
-
-        if (args.Length >= 2 && Is(args[0], "accounts") && Is(args[1], "remove"))
-        {
-            return await HandleAccountsRemoveAsync(serviceProvider, args.Skip(2).ToArray(), outputJson).ConfigureAwait(false);
-        }
-
-        if (args.Length >= 2 && Is(args[0], "instances") && Is(args[1], "install"))
-        {
-            return await HandleInstancesInstallAsync(serviceProvider, args.Skip(2).ToArray(), outputJson).ConfigureAwait(false);
-        }
-
-        if (args.Length >= 2 && Is(args[0], "instances") && Is(args[1], "verify"))
-        {
-            return await HandleInstancesVerifyAsync(serviceProvider, args.Skip(2).ToArray(), outputJson).ConfigureAwait(false);
-        }
-
-        if (args.Length >= 2 && Is(args[0], "instances") && Is(args[1], "repair"))
-        {
-            return await HandleInstancesRepairAsync(serviceProvider, args.Skip(2).ToArray(), outputJson).ConfigureAwait(false);
-        }
-
-        if (args.Length >= 2 && Is(args[0], "instances") && Is(args[1], "start"))
-        {
-            return await HandleInstancesStartAsync(serviceProvider, args.Skip(2).ToArray(), outputJson).ConfigureAwait(false);
-        }
-
-        if (args.Length >= 2 && Is(args[0], "launch") && Is(args[1], "plan"))
-        {
-            return await HandleLaunchPlanAsync(serviceProvider, args.Skip(2).ToArray(), outputJson).ConfigureAwait(false);
-        }
-
-        if (args.Length >= 2 && Is(args[0], "launch") && Is(args[1], "run"))
-        {
-            return await HandleLaunchRunAsync(serviceProvider, args.Skip(2).ToArray(), outputJson).ConfigureAwait(false);
-        }
-
-        if (args.Length >= 2 && Is(args[0], "launch") && Is(args[1], "status"))
-        {
-            return await HandleLaunchStatusAsync(serviceProvider, args.Skip(2).ToArray(), outputJson).ConfigureAwait(false);
-        }
-
-        if (args.Length >= 2 && Is(args[0], "launch") && Is(args[1], "stop"))
-        {
-            return await HandleLaunchStopAsync(serviceProvider, args.Skip(2).ToArray(), outputJson).ConfigureAwait(false);
-        }
-
-        if (args.Length >= 2 && Is(args[0], "versions") && Is(args[1], "vanilla"))
-        {
-            return await HandleVersionsVanillaAsync(serviceProvider, args.Skip(2).ToArray(), outputJson).ConfigureAwait(false);
-        }
-
-        if (args.Length >= 2 && Is(args[0], "versions") && Is(args[1], "loaders"))
-        {
-            return await HandleVersionsLoadersAsync(serviceProvider, args.Skip(2).ToArray(), outputJson).ConfigureAwait(false);
-        }
-
-        if (args.Length >= 2 && Is(args[0], "diagnostics") && Is(args[1], "dump"))
-        {
-            return await HandleDiagnosticsDumpAsync(args.Skip(2).ToArray(), outputJson).ConfigureAwait(false);
+            return await handler(serviceProvider, args.Skip(2).ToArray(), outputJson).ConfigureAwait(false);
         }
 
         WriteHelp(outputJson);
@@ -991,13 +950,11 @@ private static async Task<int> HandleLaunchPlanAsync(IServiceProvider servicePro
         return CliExitCodes.Success;
     }
 
-    private static async Task<int> HandleDiagnosticsDumpAsync(string[] args, bool outputJson)
+    private static async Task<int> HandleDiagnosticsDumpAsync(IServiceProvider serviceProvider, string[] args, bool outputJson)
     {
+        var launcherPaths = serviceProvider.GetRequiredService<ILauncherPaths>();
         var outputPath = GetOptionalOption(args, "--output");
-        var dumpDirectory = Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
-            "BlockiumLauncher",
-            "diagnostics");
+        var dumpDirectory = Path.Combine(launcherPaths.RootDirectory, "diagnostics");
 
         Directory.CreateDirectory(dumpDirectory);
 
@@ -1005,10 +962,7 @@ private static async Task<int> HandleLaunchPlanAsync(IServiceProvider servicePro
             ? Path.Combine(dumpDirectory, "dump-" + DateTime.UtcNow.ToString("yyyyMMdd-HHmmss") + ".json")
             : Path.GetFullPath(outputPath);
 
-        var logsDirectory = Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
-            "BlockiumLauncher",
-            "logs");
+        var logsDirectory = launcherPaths.LogsDirectory;
 
         Directory.CreateDirectory(logsDirectory);
 
@@ -1023,7 +977,7 @@ private static async Task<int> HandleLaunchPlanAsync(IServiceProvider servicePro
         var payload = new
         {
             CreatedAtUtc = DateTimeOffset.UtcNow,
-            AppDataRoot = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "BlockiumLauncher"),
+            AppDataRoot = launcherPaths.RootDirectory,
             LogsDirectory = logsDirectory,
             LatestLogFile = latestLogFile,
             RecentLogLines = recentLogLines

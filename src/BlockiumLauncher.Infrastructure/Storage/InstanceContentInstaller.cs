@@ -38,20 +38,6 @@ public sealed class InstanceContentInstaller : IInstanceContentInstaller
 
     private ILoaderRuntimePreparer? ResolvePreparer(LoaderType loaderType)
     {
-        return loaderType switch
-        {
-            LoaderType.Forge => FindFirstOfType<ForgeRuntimePreparer>(),
-            LoaderType.NeoForge => FindFirstOfType<NeoForgeRuntimePreparer>(),
-            LoaderType.Fabric => FindFirstOfType<FabricRuntimePreparer>(),
-            LoaderType.Quilt => FindFirstOfType<QuiltRuntimePreparer>(),
-            LoaderType.Vanilla => FindFirstOfType<LegacyLoaderRuntimePreparer>(),
-            _ => LoaderRuntimePreparers.FirstOrDefault(candidate => candidate.CanPrepare(loaderType))
-        };
-    }
-
-    private TPreparer? FindFirstOfType<TPreparer>()
-        where TPreparer : class, ILoaderRuntimePreparer
-    {
-        return LoaderRuntimePreparers.OfType<TPreparer>().FirstOrDefault();
+        return LoaderRuntimePreparers.FirstOrDefault(candidate => candidate.CanPrepare(loaderType));
     }
 }

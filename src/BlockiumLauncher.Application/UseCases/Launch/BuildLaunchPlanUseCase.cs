@@ -1,10 +1,12 @@
-using System.Text.Json;
+using BlockiumLauncher.Application.Abstractions.Launch;
 using BlockiumLauncher.Application.Abstractions.Diagnostics;
 using BlockiumLauncher.Application.Abstractions.Repositories;
 using BlockiumLauncher.Application.Abstractions.Services;
 using BlockiumLauncher.Application.Diagnostics;
 using BlockiumLauncher.Application.UseCases.Accounts;
+using BlockiumLauncher.Contracts.Accounts;
 using BlockiumLauncher.Contracts.Launch;
+using BlockiumLauncher.Domain.Entities;
 using BlockiumLauncher.Domain.Enums;
 using BlockiumLauncher.Shared.Results;
 
@@ -17,6 +19,7 @@ public sealed class BuildLaunchPlanUseCase
     private readonly IVersionManifestService VersionManifestService;
     private readonly ILoaderMetadataService LoaderMetadataService;
     private readonly IJavaRuntimeResolver JavaRuntimeResolver;
+    private readonly IRuntimeMetadataStore RuntimeMetadataStore;
     private readonly IStructuredLogger Logger;
     private readonly IOperationContextFactory OperationContextFactory;
 
@@ -31,6 +34,7 @@ public sealed class BuildLaunchPlanUseCase
             VersionManifestService,
             LoaderMetadataService,
             NoOpJavaRuntimeResolver.Instance,
+            NullRuntimeMetadataStore.Instance,
             NullStructuredLogger.Instance,
             DefaultOperationContextFactory.Instance)
     {
@@ -49,6 +53,7 @@ public sealed class BuildLaunchPlanUseCase
             VersionManifestService,
             LoaderMetadataService,
             NoOpJavaRuntimeResolver.Instance,
+            NullRuntimeMetadataStore.Instance,
             Logger,
             OperationContextFactory)
     {
@@ -60,6 +65,7 @@ public sealed class BuildLaunchPlanUseCase
         IVersionManifestService VersionManifestService,
         ILoaderMetadataService LoaderMetadataService,
         IJavaRuntimeResolver JavaRuntimeResolver,
+        IRuntimeMetadataStore RuntimeMetadataStore,
         IStructuredLogger Logger,
         IOperationContextFactory OperationContextFactory)
     {
@@ -68,6 +74,7 @@ public sealed class BuildLaunchPlanUseCase
         this.VersionManifestService = VersionManifestService ?? throw new ArgumentNullException(nameof(VersionManifestService));
         this.LoaderMetadataService = LoaderMetadataService ?? throw new ArgumentNullException(nameof(LoaderMetadataService));
         this.JavaRuntimeResolver = JavaRuntimeResolver ?? throw new ArgumentNullException(nameof(JavaRuntimeResolver));
+        this.RuntimeMetadataStore = RuntimeMetadataStore ?? throw new ArgumentNullException(nameof(RuntimeMetadataStore));
         this.Logger = Logger ?? throw new ArgumentNullException(nameof(Logger));
         this.OperationContextFactory = OperationContextFactory ?? throw new ArgumentNullException(nameof(OperationContextFactory));
     }
@@ -178,7 +185,7 @@ public sealed class BuildLaunchPlanUseCase
         }
 
         var Account = AccountResult.Value;
-        var RuntimeMetadata = TryLoadRuntimeMetadata(WorkingDirectory);
+        var RuntimeMetadata = await RuntimeMetadataStore.LoadAsync(WorkingDirectory, CancellationToken).ConfigureAwait(false);
 
         var ResolvedMainClass = ResolveMainClass(Request, RuntimeMetadata);
         if (string.IsNullOrWhiteSpace(ResolvedMainClass))
@@ -350,22 +357,7 @@ public sealed class BuildLaunchPlanUseCase
         return Result<LaunchPlanDto>.Success(Plan);
     }
 
-    private static RuntimeMetadataDto? TryLoadRuntimeMetadata(string WorkingDirectory)
-    {
-        var RuntimePath = Path.Combine(WorkingDirectory, ".blockium", "runtime.json");
-        if (!File.Exists(RuntimePath))
-        {
-            return null;
-        }
-
-        var Json = File.ReadAllText(RuntimePath);
-        return JsonSerializer.Deserialize<RuntimeMetadataDto>(Json, new JsonSerializerOptions
-        {
-            PropertyNameCaseInsensitive = true
-        });
-    }
-
-    private static string? ResolveMainClass(BuildLaunchPlanRequest Request, RuntimeMetadataDto? RuntimeMetadata)
+    private static string? ResolveMainClass(BuildLaunchPlanRequest Request, RuntimeMetadata? RuntimeMetadata)
     {
         if (!string.IsNullOrWhiteSpace(Request.MainClass))
         {
@@ -382,7 +374,7 @@ public sealed class BuildLaunchPlanUseCase
 
     private static List<string> ResolveClasspathEntries(
         BuildLaunchPlanRequest Request,
-        RuntimeMetadataDto? RuntimeMetadata,
+        RuntimeMetadata? RuntimeMetadata,
         string WorkingDirectory)
     {
         var SourceEntries = Request.ClasspathEntries is not null && Request.ClasspathEntries.Count > 0
@@ -418,7 +410,7 @@ public sealed class BuildLaunchPlanUseCase
 
     private static string? ResolveAssetsDirectory(
         BuildLaunchPlanRequest Request,
-        RuntimeMetadataDto? RuntimeMetadata,
+        RuntimeMetadata? RuntimeMetadata,
         string WorkingDirectory)
     {
         var Value = !string.IsNullOrWhiteSpace(Request.AssetsDirectory)
@@ -435,7 +427,7 @@ public sealed class BuildLaunchPlanUseCase
             : Path.GetFullPath(Path.Combine(WorkingDirectory, Value));
     }
 
-    private static string? ResolveAssetIndexId(BuildLaunchPlanRequest Request, RuntimeMetadataDto? RuntimeMetadata)
+    private static string? ResolveAssetIndexId(BuildLaunchPlanRequest Request, RuntimeMetadata? RuntimeMetadata)
     {
         if (!string.IsNullOrWhiteSpace(Request.AssetIndexId))
         {
@@ -450,7 +442,7 @@ public sealed class BuildLaunchPlanUseCase
         return null;
     }
 
-    private static string? ResolveNativesDirectory(RuntimeMetadataDto? RuntimeMetadata, string WorkingDirectory)
+    private static string? ResolveNativesDirectory(RuntimeMetadata? RuntimeMetadata, string WorkingDirectory)
     {
         if (string.IsNullOrWhiteSpace(RuntimeMetadata?.NativesDirectory))
         {
@@ -465,8 +457,8 @@ public sealed class BuildLaunchPlanUseCase
     }
 
     private static Dictionary<string, string> BuildTokenMap(
-        dynamic Instance,
-        dynamic Account,
+        LauncherInstance Instance,
+        LaunchAccountContextDto Account,
         string WorkingDirectory,
         string? AssetsDirectory,
         string? AssetIndexId,
@@ -474,9 +466,9 @@ public sealed class BuildLaunchPlanUseCase
         string ResolvedMainClass,
         IReadOnlyList<string> ClasspathEntries,
         string ClasspathText,
-        RuntimeMetadataDto? RuntimeMetadata)
+        RuntimeMetadata? RuntimeMetadata)
     {
-        var GameVersion = Instance.GameVersion?.ToString() ?? string.Empty;
+        var GameVersion = Instance.GameVersion.ToString();
         var LoaderVersion = Instance.LoaderVersion?.ToString() ?? string.Empty;
         var VersionName = !string.IsNullOrWhiteSpace(RuntimeMetadata?.Version)
             ? RuntimeMetadata.Version
@@ -514,7 +506,7 @@ public sealed class BuildLaunchPlanUseCase
 
     private static string TryResolveLibraryDirectory(
         IReadOnlyList<string> ClasspathEntries,
-        RuntimeMetadataDto? RuntimeMetadata)
+        RuntimeMetadata? RuntimeMetadata)
     {
         if (!string.IsNullOrWhiteSpace(RuntimeMetadata?.LibraryDirectory))
         {
@@ -640,17 +632,4 @@ public sealed class BuildLaunchPlanUseCase
         return Result;
     }
 
-    private sealed class RuntimeMetadataDto
-    {
-        public string Version { get; init; } = string.Empty;
-        public string MainClass { get; init; } = string.Empty;
-        public string ClientJarPath { get; init; } = string.Empty;
-        public IReadOnlyList<string> ClasspathEntries { get; init; } = [];
-        public string AssetsDirectory { get; init; } = string.Empty;
-        public string AssetIndexId { get; init; } = string.Empty;
-        public string NativesDirectory { get; init; } = string.Empty;
-        public string LibraryDirectory { get; init; } = string.Empty;
-        public string[] ExtraJvmArguments { get; init; } = [];
-        public string[] ExtraGameArguments { get; init; } = [];
-    }
 }

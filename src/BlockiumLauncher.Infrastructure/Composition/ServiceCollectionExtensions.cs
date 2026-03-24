@@ -39,15 +39,16 @@ public static class ServiceCollectionExtensions
         Services.AddSingleton<ForgeMetadataClient>();
         Services.AddSingleton<NeoForgeMetadataClient>();
 
-        Services.AddSingleton(JsonFileStore => new LauncherPaths(LauncherPaths.CreateDefault().RootDirectory));
+        Services.AddSingleton(_ => new LauncherPaths(LauncherPaths.CreateDefault().RootDirectory));
         Services.AddSingleton<ILauncherPaths>(Provider => Provider.GetRequiredService<LauncherPaths>());
-  Services.AddSingleton<ILauncherDataMigrationService, LauncherDataMigrationService>();
-  Services.AddSingleton<ISharedContentLayout, SharedContentLayout>();
+        Services.AddSingleton<ILauncherDataMigrationService, LauncherDataMigrationService>();
+        Services.AddSingleton<ISharedContentLayout, SharedContentLayout>();
         Services.AddSingleton<JsonFileStore>();
 
         Services.AddSingleton<IMetadataCacheRepository, JsonMetadataCacheRepository>();
         Services.AddSingleton<IAccountRepository, JsonAccountRepository>();
         Services.AddSingleton<IInstanceRepository, JsonInstanceRepository>();
+        Services.AddSingleton<IJavaInstallationRepository, JsonJavaInstallationRepository>();
 
         Services.AddSingleton<IVersionManifestService, CachedVersionManifestService>();
         Services.AddSingleton<ILoaderMetadataService, CachedLoaderMetadataService>();
@@ -55,6 +56,7 @@ public static class ServiceCollectionExtensions
         Services.AddSingleton<ISecretRedactor, SensitiveDataRedactor>();
         Services.AddSingleton<IStructuredLogger, FileStructuredLogger>();
         Services.AddSingleton<IOperationContextFactory, BlockiumLauncher.Application.Diagnostics.DefaultOperationContextFactory>();
+        Services.AddSingleton<IRuntimeMetadataStore, JsonRuntimeMetadataStore>();
 
         Services.AddSingleton<IDownloader, HttpDownloader>();
 
@@ -62,7 +64,7 @@ public static class ServiceCollectionExtensions
         Services.AddSingleton<IJavaValidationService, JavaValidationService>();
         Services.AddSingleton<IJavaDiscoveryService, JavaDiscoveryService>();
         Services.AddSingleton<IJavaRuntimeResolver, ManagedJavaRuntimeResolver>();
-  Services.AddSingleton<IJavaRequirementResolver, JavaRequirementResolver>();
+        Services.AddSingleton<IJavaRequirementResolver, JavaRequirementResolver>();
 
         Services.AddTransient<DiscoverJavaUseCase>();
         Services.AddTransient<ValidateJavaUseCase>();
@@ -71,19 +73,19 @@ public static class ServiceCollectionExtensions
         Services.AddTransient<BlockiumLauncher.Application.Abstractions.Storage.IArchiveExtractor, BlockiumLauncher.Infrastructure.Storage.ZipArchiveExtractor>();
         Services.AddTransient<BlockiumLauncher.Application.Abstractions.Storage.IFileTransaction, BlockiumLauncher.Infrastructure.Storage.FileTransaction>();
         Services.AddTransient<LegacyLoaderRuntimePreparer>();
-  Services.AddTransient<ILoaderRuntimePreparer, LegacyLoaderRuntimePreparer>();
-  Services.AddTransient<IFabricInstallOrchestrator, FabricInstallOrchestrator>();
-  Services.AddTransient<IQuiltInstallOrchestrator, QuiltInstallOrchestrator>();
-  Services.AddTransient<ILoaderRuntimePreparer, FabricRuntimePreparer>();
-  Services.AddTransient<ILoaderRuntimePreparer, QuiltRuntimePreparer>();
-  Services.AddTransient<INeoForgeInstallOrchestrator, NeoForgeInstallOrchestrator>();
+        Services.AddTransient<ILoaderRuntimePreparer, LegacyLoaderRuntimePreparer>();
+        Services.AddTransient<IFabricInstallOrchestrator, FabricInstallOrchestrator>();
+        Services.AddTransient<IQuiltInstallOrchestrator, QuiltInstallOrchestrator>();
+        Services.AddTransient<ILoaderRuntimePreparer, FabricRuntimePreparer>();
+        Services.AddTransient<ILoaderRuntimePreparer, QuiltRuntimePreparer>();
+        Services.AddTransient<INeoForgeInstallOrchestrator, NeoForgeInstallOrchestrator>();
         Services.AddTransient<IForgeInstallOrchestrator, ForgeInstallOrchestrator>();
-  Services.AddTransient<ILoaderRuntimePreparer, ForgeRuntimePreparer>();
+        Services.AddTransient<ILoaderRuntimePreparer, ForgeRuntimePreparer>();
         Services.AddTransient<ILoaderRuntimePreparer, NeoForgeRuntimePreparer>();
-  Services.AddTransient<BlockiumLauncher.Application.Abstractions.Storage.IInstanceContentInstaller, BlockiumLauncher.Infrastructure.Storage.InstanceContentInstaller>();
+        Services.AddTransient<BlockiumLauncher.Application.Abstractions.Storage.IInstanceContentInstaller, BlockiumLauncher.Infrastructure.Storage.InstanceContentInstaller>();
 
         Services.AddSingleton<BlockiumLauncher.Application.Abstractions.Security.ITokenStore, BlockiumLauncher.Infrastructure.Security.WindowsProtectedTokenStore>();
-        Services.AddSingleton<IMicrosoftAuthProvider, PlaceholderMicrosoftAuthProvider>();
+        Services.AddSingleton<IMicrosoftAuthProvider, NotConfiguredMicrosoftAuthProvider>();
         Services.AddSingleton<ILaunchProcessRunner, LaunchProcessRunner>();
 
         Services.AddTransient<InstallPlanBuilder>();

@@ -1,5 +1,6 @@
 using System.Text.Json;
 using BlockiumLauncher.Application.Abstractions.Diagnostics;
+using BlockiumLauncher.Infrastructure.Persistence.Paths;
 
 namespace BlockiumLauncher.Infrastructure.Diagnostics;
 
@@ -9,13 +10,10 @@ public sealed class FileStructuredLogger : IStructuredLogger
     private readonly string LogsDirectory;
     private readonly object Sync = new();
 
-    public FileStructuredLogger(ISecretRedactor SecretRedactor)
+    public FileStructuredLogger(ISecretRedactor SecretRedactor, ILauncherPaths launcherPaths)
     {
         this.SecretRedactor = SecretRedactor ?? throw new ArgumentNullException(nameof(SecretRedactor));
-        LogsDirectory = Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
-            "BlockiumLauncher",
-            "logs");
+        LogsDirectory = (launcherPaths ?? throw new ArgumentNullException(nameof(launcherPaths))).LogsDirectory;
     }
 
     public void Info(OperationContext Context, string Source, string EventName, string Message, object? Data = null)

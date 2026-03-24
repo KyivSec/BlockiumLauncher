@@ -4,6 +4,7 @@ using BlockiumLauncher.Domain.Enums;
 using BlockiumLauncher.Domain.ValueObjects;
 using BlockiumLauncher.Infrastructure.Persistence.Json;
 using BlockiumLauncher.Infrastructure.Persistence.Models;
+using BlockiumLauncher.Infrastructure.Persistence.Paths;
 
 namespace BlockiumLauncher.Infrastructure.Persistence.Repositories;
 
@@ -12,14 +13,10 @@ public sealed class JsonAccountRepository : IAccountRepository
     private readonly JsonFileStore JsonFileStore;
     private readonly string AccountsFilePath;
 
-    public JsonAccountRepository(JsonFileStore JsonFileStore)
+    public JsonAccountRepository(JsonFileStore JsonFileStore, ILauncherPaths launcherPaths)
     {
         this.JsonFileStore = JsonFileStore ?? throw new ArgumentNullException(nameof(JsonFileStore));
-
-        AccountsFilePath = Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
-            "BlockiumLauncher",
-            "accounts.json");
+        AccountsFilePath = (launcherPaths ?? throw new ArgumentNullException(nameof(launcherPaths))).AccountsFilePath;
     }
 
     public async Task<IReadOnlyList<LauncherAccount>> ListAsync(CancellationToken CancellationToken = default)
