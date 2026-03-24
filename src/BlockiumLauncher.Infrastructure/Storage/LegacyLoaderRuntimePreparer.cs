@@ -322,7 +322,95 @@ public async Task<Result<string>> PrepareAsync(
         await WriteRuntimeMetadataAsync(RuntimeMetadataPath, RuntimeMetadata, CancellationToken).ConfigureAwait(false);
     }
 
-    private async Task DownloadFabricRuntimeAsync(
+    private async Task DownloadQuiltRuntimeAsync(
+        InstallPlan Plan,
+        string RootPath,
+        OperationContext Context,
+        CancellationToken CancellationToken)
+    {
+        using var HttpClient = new HttpClient();
+
+        var ProfileUrl = $"https://meta.quiltmc.org/v3/versions/loader/{Plan.GameVersion}/{Plan.LoaderVersion}/profile/json";
+        var ProfileJson = await HttpClient.GetStringAsync(ProfileUrl, CancellationToken).ConfigureAwait(false);
+        using var ProfileDocument = JsonDocument.Parse(ProfileJson);
+        var Root = ProfileDocument.RootElement;
+
+        var RuntimeMetadataPath = Path.Combine(RootPath, ".blockium", "runtime.json");
+        var RuntimeMetadata = await ReadRuntimeMetadataAsync(RuntimeMetadataPath, CancellationToken).ConfigureAwait(false);
+
+        var QuiltLoaderRoot = LauncherPaths.GetSharedLoaderDirectory(LoaderType.Quilt, Plan.GameVersion, Plan.LoaderVersion!);
+        var QuiltLibrariesRoot = Path.Combine(QuiltLoaderRoot, "libraries");
+        Directory.CreateDirectory(QuiltLibrariesRoot);
+
+        var QuiltLibraries = new System.Collections.Generic.List<string>();
+
+        if (Root.TryGetProperty("libraries", out var LibrariesElement) && LibrariesElement.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var Library in LibrariesElement.EnumerateArray())
+            {
+                if (!Library.TryGetProperty("name", out var NameElement) || NameElement.ValueKind != JsonValueKind.String)
+                {
+                    continue;
+                }
+
+                var Coordinates = NameElement.GetString();
+                if (string.IsNullOrWhiteSpace(Coordinates))
+                {
+                    continue;
+                }
+
+                var RepositoryUrl = Library.TryGetProperty("url", out var UrlElement) && UrlElement.ValueKind == JsonValueKind.String
+                    ? UrlElement.GetString()
+                    : "https://maven.Quiltmc.net/";
+
+                if (string.IsNullOrWhiteSpace(RepositoryUrl))
+                {
+                    RepositoryUrl = "https://maven.Quiltmc.net/";
+                }
+
+                var RelativeArtifactPath = BuildMavenArtifactPath(Coordinates);
+                var DownloadUrl = CombineMavenUrl(RepositoryUrl, RelativeArtifactPath);
+                var DestinationPath = Path.Combine(QuiltLibrariesRoot, RelativeArtifactPath);
+
+                await DownloadFileAsync(HttpClient, DownloadUrl, DestinationPath, null, CancellationToken).ConfigureAwait(false);
+
+                QuiltLibraries.Add(DestinationPath);
+            }
+        }
+
+        var MainClass = Root.TryGetProperty("mainClass", out var MainClassElement) && MainClassElement.ValueKind == JsonValueKind.String
+            ? MainClassElement.GetString()
+            : RuntimeMetadata.MainClass;
+
+        var JvmArgs = ExtractArguments(Root, "jvm");
+        var GameArgs = ExtractArguments(Root, "game");
+
+        var CombinedClasspath = new System.Collections.Generic.List<string>();
+        CombinedClasspath.AddRange(QuiltLibraries);
+        foreach (var Existing in RuntimeMetadata.ClasspathEntries)
+        {
+            if (!CombinedClasspath.Contains(Existing, StringComparer.OrdinalIgnoreCase))
+            {
+                CombinedClasspath.Add(Existing);
+            }
+        }
+
+        RuntimeMetadata.MainClass = MainClass ?? RuntimeMetadata.MainClass;
+        RuntimeMetadata.ClasspathEntries = CombinedClasspath.ToArray();
+        RuntimeMetadata.ExtraJvmArguments = MergeDistinct(RuntimeMetadata.ExtraJvmArguments, JvmArgs);
+        RuntimeMetadata.ExtraGameArguments = MergeDistinct(RuntimeMetadata.ExtraGameArguments, GameArgs);
+        RuntimeMetadata.LoaderType = LoaderType.Quilt.ToString();
+        RuntimeMetadata.LoaderVersion = Plan.LoaderVersion ?? string.Empty;
+        RuntimeMetadata.LoaderProfileJsonPath = Path.Combine(QuiltLoaderRoot, "Quilt-profile.json");
+
+        var ProfilePath = Path.Combine(QuiltLoaderRoot, "Quilt-profile.json");
+        Directory.CreateDirectory(Path.GetDirectoryName(ProfilePath)!);
+        await File.WriteAllTextAsync(ProfilePath, ProfileJson, CancellationToken).ConfigureAwait(false);
+
+        await WriteRuntimeMetadataAsync(RuntimeMetadataPath, RuntimeMetadata, CancellationToken).ConfigureAwait(false);
+    }
+
+private async Task DownloadFabricRuntimeAsync(
         InstallPlan Plan,
         string RootPath,
         OperationContext Context,

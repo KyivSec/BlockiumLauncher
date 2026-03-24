@@ -91,14 +91,150 @@ public sealed class QuiltInstallOrchestrator : IQuiltInstallOrchestrator
             await JsonSerializer.SerializeAsync(stream, snapshot, cancellationToken: cancellationToken);
         }
 
-        var prepareResult = await FallbackPreparer.PrepareAsync(plan, workspace, cancellationToken).ConfigureAwait(false);
+        var prepareResult = await FallbackPreparer.PrepareAsync(
+            plan,
+            workspace,
+            cancellationToken).ConfigureAwait(false);
 
-        if (prepareResult.IsSuccess && File.Exists(snapshotPath))
+        if (prepareResult.IsFailure)
+        {
+            return prepareResult;
+        }
+
+        await NormalizeRuntimeMetadataToQuiltAsync(
+            prepareResult.Value,
+            plan.GameVersion,
+            plan.LoaderVersion,
+            cancellationToken).ConfigureAwait(false);
+
+        if (File.Exists(snapshotPath))
         {
             File.Delete(snapshotPath);
         }
 
         return prepareResult;
+    }
+
+    private static async Task NormalizeRuntimeMetadataToQuiltAsync(
+        string preparedRootPath,
+        string gameVersion,
+        string loaderVersion,
+        CancellationToken cancellationToken)
+    {
+        var runtimeMetadataPath = Path.Combine(preparedRootPath, ".blockium", "runtime.json");
+        if (!File.Exists(runtimeMetadataPath))
+        {
+            throw new InvalidOperationException("Quilt preparation completed without runtime.json.");
+        }
+
+        var json = await File.ReadAllTextAsync(runtimeMetadataPath, cancellationToken).ConfigureAwait(false);
+        using var document = JsonDocument.Parse(json);
+
+        var root = document.RootElement;
+
+        var mainClass = root.TryGetProperty("MainClass", out var mainClassElement) && mainClassElement.ValueKind == JsonValueKind.String
+            ? mainClassElement.GetString() ?? string.Empty
+            : string.Empty;
+
+        var clientJarPath = root.TryGetProperty("ClientJarPath", out var clientJarPathElement) && clientJarPathElement.ValueKind == JsonValueKind.String
+            ? clientJarPathElement.GetString() ?? string.Empty
+            : string.Empty;
+
+        var assetsDirectory = root.TryGetProperty("AssetsDirectory", out var assetsDirectoryElement) && assetsDirectoryElement.ValueKind == JsonValueKind.String
+            ? assetsDirectoryElement.GetString() ?? string.Empty
+            : string.Empty;
+
+        var assetIndexId = root.TryGetProperty("AssetIndexId", out var assetIndexIdElement) && assetIndexIdElement.ValueKind == JsonValueKind.String
+            ? assetIndexIdElement.GetString() ?? string.Empty
+            : string.Empty;
+
+        var nativesDirectory = root.TryGetProperty("NativesDirectory", out var nativesDirectoryElement) && nativesDirectoryElement.ValueKind == JsonValueKind.String
+            ? nativesDirectoryElement.GetString() ?? string.Empty
+            : string.Empty;
+
+        var libraryDirectory = root.TryGetProperty("LibraryDirectory", out var libraryDirectoryElement) && libraryDirectoryElement.ValueKind == JsonValueKind.String
+            ? libraryDirectoryElement.GetString() ?? string.Empty
+            : string.Empty;
+
+        var classpathEntries = ReadStringArray(root, "ClasspathEntries");
+        var extraJvmArguments = ReadStringArray(root, "ExtraJvmArguments");
+        var extraGameArguments = ReadStringArray(root, "ExtraGameArguments");
+
+        var normalized = new RuntimeMetadata(
+            !string.IsNullOrWhiteSpace(loaderVersion) ? loaderVersion : gameVersion,
+            string.IsNullOrWhiteSpace(mainClass) ? "org.quiltmc.loader.impl.launch.knot.KnotClient" : mainClass,
+            clientJarPath,
+            classpathEntries,
+            assetsDirectory,
+            assetIndexId,
+            nativesDirectory,
+            libraryDirectory,
+            extraJvmArguments,
+            NormalizeGameArguments(extraGameArguments),
+            "Quilt",
+            loaderVersion,
+            string.Empty);
+
+        var options = new JsonSerializerOptions
+        {
+            WriteIndented = true
+        };
+
+        var normalizedJson = JsonSerializer.Serialize(normalized, options);
+        await File.WriteAllTextAsync(runtimeMetadataPath, normalizedJson, cancellationToken).ConfigureAwait(false);
+    }
+
+    private static string[] ReadStringArray(JsonElement root, string propertyName)
+    {
+        if (!root.TryGetProperty(propertyName, out var element) || element.ValueKind != JsonValueKind.Array)
+        {
+            return [];
+        }
+
+        var result = new List<string>();
+
+        foreach (var item in element.EnumerateArray())
+        {
+            if (item.ValueKind != JsonValueKind.String)
+            {
+                continue;
+            }
+
+            var value = item.GetString();
+            if (!string.IsNullOrWhiteSpace(value))
+            {
+                result.Add(value);
+            }
+        }
+
+        return result.ToArray();
+    }
+
+    private static string[] NormalizeGameArguments(string[] arguments)
+    {
+        if (arguments.Length == 0)
+        {
+            return arguments;
+        }
+
+        var result = new List<string>(arguments.Length);
+
+        for (var index = 0; index < arguments.Length; index++)
+        {
+            var argument = arguments[index];
+
+            if (string.Equals(argument, "Fabric", StringComparison.OrdinalIgnoreCase) &&
+                index > 0 &&
+                string.Equals(arguments[index - 1], "--loader", StringComparison.OrdinalIgnoreCase))
+            {
+                result.Add("Quilt");
+                continue;
+            }
+
+            result.Add(argument);
+        }
+
+        return result.ToArray();
     }
 
     private sealed record QuiltPlanSnapshot(
@@ -109,4 +245,19 @@ public sealed class QuiltInstallOrchestrator : IQuiltInstallOrchestrator
         string RuntimeRoot,
         string WorkspaceRootPath,
         DateTimeOffset CreatedAtUtc);
+
+    private sealed record RuntimeMetadata(
+        string Version,
+        string MainClass,
+        string ClientJarPath,
+        string[] ClasspathEntries,
+        string AssetsDirectory,
+        string AssetIndexId,
+        string NativesDirectory,
+        string LibraryDirectory,
+        string[] ExtraJvmArguments,
+        string[] ExtraGameArguments,
+        string LoaderType,
+        string LoaderVersion,
+        string LoaderProfileJsonPath);
 }

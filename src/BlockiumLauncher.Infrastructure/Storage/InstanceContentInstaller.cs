@@ -1,6 +1,7 @@
 using System.Linq;
 using BlockiumLauncher.Application.Abstractions.Storage;
 using BlockiumLauncher.Application.UseCases.Install;
+using BlockiumLauncher.Domain.Enums;
 using BlockiumLauncher.Shared.Errors;
 using BlockiumLauncher.Shared.Results;
 
@@ -23,7 +24,7 @@ public sealed class InstanceContentInstaller : IInstanceContentInstaller
         ArgumentNullException.ThrowIfNull(plan);
         ArgumentNullException.ThrowIfNull(workspace);
 
-        var preparer = LoaderRuntimePreparers.FirstOrDefault(candidate => candidate.CanPrepare(plan.LoaderType));
+        var preparer = ResolvePreparer(plan.LoaderType);
         if (preparer is null)
         {
             return Task.FromResult(Result<string>.Failure(
@@ -33,5 +34,23 @@ public sealed class InstanceContentInstaller : IInstanceContentInstaller
         }
 
         return preparer.PrepareAsync(plan, workspace, cancellationToken);
+    }
+
+    private ILoaderRuntimePreparer? ResolvePreparer(LoaderType loaderType)
+    {
+        return loaderType switch
+        {
+            LoaderType.NeoForge => FindFirstOfType<NeoForgeRuntimePreparer>(),
+            LoaderType.Fabric => FindFirstOfType<FabricRuntimePreparer>(),
+            LoaderType.Quilt => FindFirstOfType<QuiltRuntimePreparer>(),
+            LoaderType.Vanilla => FindFirstOfType<LegacyLoaderRuntimePreparer>(),
+            _ => LoaderRuntimePreparers.FirstOrDefault(candidate => candidate.CanPrepare(loaderType))
+        };
+    }
+
+    private TPreparer? FindFirstOfType<TPreparer>()
+        where TPreparer : class, ILoaderRuntimePreparer
+    {
+        return LoaderRuntimePreparers.OfType<TPreparer>().FirstOrDefault();
     }
 }
