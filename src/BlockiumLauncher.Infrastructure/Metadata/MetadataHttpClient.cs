@@ -12,6 +12,10 @@ public sealed class MetadataHttpClient : IMetadataHttpClient
         this.HttpClient = HttpClient;
         this.Options = Options;
         this.HttpClient.Timeout = Options.Timeout;
+        if (!this.HttpClient.DefaultRequestHeaders.UserAgent.Any())
+        {
+            this.HttpClient.DefaultRequestHeaders.UserAgent.ParseAdd("BlockiumLauncher/0.1");
+        }
     }
 
     public async Task<Result<string>> GetStringAsync(Uri Uri, CancellationToken CancellationToken)

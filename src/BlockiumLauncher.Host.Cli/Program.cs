@@ -2,8 +2,10 @@ using System.Text.Json;
 using BlockiumLauncher.Application.Abstractions.Repositories;
 using BlockiumLauncher.Application.Abstractions.Services;
 using BlockiumLauncher.Application.UseCases.Accounts;
+using BlockiumLauncher.Application.UseCases.Catalog;
 using BlockiumLauncher.Application.UseCases.Install;
 using BlockiumLauncher.Application.Abstractions.Instances;
+using BlockiumLauncher.Application.UseCases.Common;
 using BlockiumLauncher.Application.UseCases.Instances;
 using BlockiumLauncher.Application.UseCases.Launch;
 using BlockiumLauncher.Contracts.Launch;
@@ -42,6 +44,10 @@ internal static class Program
             ["launch run"] = static (serviceProvider, args, outputJson) => HandleLaunchRunAsync(serviceProvider, args, outputJson),
             ["launch status"] = static (serviceProvider, args, outputJson) => HandleLaunchStatusAsync(serviceProvider, args, outputJson),
             ["launch stop"] = static (serviceProvider, args, outputJson) => HandleLaunchStopAsync(serviceProvider, args, outputJson),
+            ["catalog mods"] = static (serviceProvider, args, outputJson) => HandleCatalogSearchAsync(serviceProvider, CatalogContentType.Mod, args, outputJson),
+            ["catalog modpacks"] = static (serviceProvider, args, outputJson) => HandleCatalogSearchAsync(serviceProvider, CatalogContentType.Modpack, args, outputJson),
+            ["catalog resourcepacks"] = static (serviceProvider, args, outputJson) => HandleCatalogSearchAsync(serviceProvider, CatalogContentType.ResourcePack, args, outputJson),
+            ["catalog shaders"] = static (serviceProvider, args, outputJson) => HandleCatalogSearchAsync(serviceProvider, CatalogContentType.Shader, args, outputJson),
             ["versions vanilla"] = static (serviceProvider, args, outputJson) => HandleVersionsVanillaAsync(serviceProvider, args, outputJson),
             ["versions loaders"] = static (serviceProvider, args, outputJson) => HandleVersionsLoadersAsync(serviceProvider, args, outputJson),
             ["diagnostics dump"] = static (serviceProvider, args, outputJson) => HandleDiagnosticsDumpAsync(serviceProvider, args, outputJson),
@@ -842,6 +848,78 @@ private static async Task<int> HandleLaunchPlanAsync(IServiceProvider servicePro
         return CliExitCodes.Success;
     }
 
+    private static async Task<int> HandleCatalogSearchAsync(
+        IServiceProvider serviceProvider,
+        CatalogContentType contentType,
+        string[] args,
+        bool outputJson)
+    {
+        var providerText = GetOptionalOption(args, "--provider") ?? "modrinth";
+        var loader = GetOptionalOption(args, "--loader");
+        var gameVersion = GetOptionalOption(args, "--game-version");
+        var query = GetOptionalOption(args, "--query");
+        var categories = GetMultiOption(args, "--category");
+
+        if (!TryParseCatalogProvider(providerText, out var provider))
+        {
+            WriteFailure("Cli.InvalidArguments", $"Unsupported provider: {providerText}", outputJson);
+            return CliExitCodes.InvalidArguments;
+        }
+
+        if (!TryParseCatalogSearchSort(GetOptionalOption(args, "--sort"), out var sort))
+        {
+            WriteFailure("Cli.InvalidArguments", "Unsupported sort. Use relevance, downloads, follows, newest, or updated.", outputJson);
+            return CliExitCodes.InvalidArguments;
+        }
+
+        if (!TryParseInt32(GetOptionalOption(args, "--limit"), 20, 1, 100, out var limit) ||
+            !TryParseInt32(GetOptionalOption(args, "--offset"), 0, 0, int.MaxValue, out var offset))
+        {
+            WriteFailure("Cli.InvalidArguments", "Invalid paging options. --limit must be 1-100 and --offset must be 0 or greater.", outputJson);
+            return CliExitCodes.InvalidArguments;
+        }
+
+        var useCase = serviceProvider.GetRequiredService<SearchCatalogUseCase>();
+        var result = await useCase.ExecuteAsync(new SearchCatalogRequest
+        {
+            Provider = provider,
+            ContentType = contentType,
+            Query = query,
+            GameVersion = gameVersion,
+            Loader = loader,
+            Categories = categories,
+            Sort = sort,
+            Limit = limit,
+            Offset = offset
+        }).ConfigureAwait(false);
+
+        if (result.IsFailure)
+        {
+            WriteFailure(result.Error.Code, result.Error.Message, outputJson);
+            return CliExitCodes.OperationFailed;
+        }
+
+        WriteSuccess(result.Value, outputJson, lines =>
+        {
+            if (result.Value.Count == 0)
+            {
+                lines.Add($"No matching {contentType.ToString().ToLowerInvariant()} results found.");
+                return;
+            }
+
+            foreach (var item in result.Value)
+            {
+                lines.Add($"{item.Title} | {item.ProjectId} | Downloads={item.Downloads} | Loaders={string.Join(",", item.Loaders)} | Versions={string.Join(",", item.GameVersions)}");
+                if (!string.IsNullOrWhiteSpace(item.ProjectUrl))
+                {
+                    lines.Add(item.ProjectUrl!);
+                }
+            }
+        });
+
+        return CliExitCodes.Success;
+    }
+
     private static async Task<int> HandleVersionsVanillaAsync(IServiceProvider serviceProvider, string[] args, bool outputJson)
     {
         var service = serviceProvider.GetRequiredService<IVersionManifestService>();
@@ -1295,6 +1373,71 @@ private static async Task<int> HandleLaunchPlanAsync(IServiceProvider servicePro
         };
     }
 
+    private static bool TryParseCatalogProvider(string? value, out CatalogProvider provider)
+    {
+        provider = CatalogProvider.Modrinth;
+
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return true;
+        }
+
+        return value.Trim().ToLowerInvariant() switch
+        {
+            "modrinth" => true,
+            "curseforge" => (provider = CatalogProvider.CurseForge) == CatalogProvider.CurseForge,
+            _ => false
+        };
+    }
+
+    private static bool TryParseCatalogSearchSort(string? value, out CatalogSearchSort sort)
+    {
+        sort = CatalogSearchSort.Relevance;
+
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return true;
+        }
+
+        switch (value.Trim().ToLowerInvariant())
+        {
+            case "relevance":
+                sort = CatalogSearchSort.Relevance;
+                return true;
+            case "downloads":
+                sort = CatalogSearchSort.Downloads;
+                return true;
+            case "follows":
+                sort = CatalogSearchSort.Follows;
+                return true;
+            case "newest":
+                sort = CatalogSearchSort.Newest;
+                return true;
+            case "updated":
+                sort = CatalogSearchSort.Updated;
+                return true;
+            default:
+                return false;
+        }
+    }
+
+    private static bool TryParseInt32(string? value, int defaultValue, int minValue, int maxValue, out int result)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            result = defaultValue;
+            return true;
+        }
+
+        if (int.TryParse(value, out result) && result >= minValue && result <= maxValue)
+        {
+            return true;
+        }
+
+        result = defaultValue;
+        return false;
+    }
+
     private static bool MatchesVanillaType(dynamic version, string[] requestedTypes)
     {
         var versionId = (string?)version.VersionId?.ToString() ?? string.Empty;
@@ -1365,6 +1508,10 @@ private static async Task<int> HandleLaunchPlanAsync(IServiceProvider servicePro
                 "launch run --instance-id <id> --java <path> [--main-class <class>] [--classpath <entry> ...] [--assets-dir <path>] [--asset-index <id>] [--account-id <id>] [--json]",
                 "launch status --launch-id <guid> [--json]",
                 "launch stop --launch-id <guid> [--json]",
+                "catalog mods [--provider <modrinth|curseforge>] [--loader <fabric|quilt|forge|neoforge>] [--game-version <version>] [--query <text>] [--category <value> ...] [--sort <relevance|downloads|follows|newest|updated>] [--limit <1-100>] [--offset <0+>] [--json]",
+                "catalog modpacks [--provider <modrinth|curseforge>] [--game-version <version>] [--query <text>] [--category <value> ...] [--sort <relevance|downloads|follows|newest|updated>] [--limit <1-100>] [--offset <0+>] [--json]",
+                "catalog resourcepacks [--provider <modrinth|curseforge>] [--game-version <version>] [--query <text>] [--category <value> ...] [--sort <relevance|downloads|follows|newest|updated>] [--limit <1-100>] [--offset <0+>] [--json]",
+                "catalog shaders [--provider <modrinth|curseforge>] [--game-version <version>] [--query <text>] [--category <value> ...] [--sort <relevance|downloads|follows|newest|updated>] [--limit <1-100>] [--offset <0+>] [--json]",
                 "versions vanilla [--type <release|snapshot|beta|alpha|experimental>] [--latest] [--json]",
                 "versions loaders --loader <fabric|quilt|forge|neoforge> --game-version <version> [--json]",
                 "diagnostics dump [--output <path>] [--json]",

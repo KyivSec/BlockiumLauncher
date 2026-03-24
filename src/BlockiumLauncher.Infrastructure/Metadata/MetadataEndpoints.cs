@@ -19,4 +19,8 @@ internal static class MetadataEndpoints
 
     internal const string NeoForgeMavenMetadata =
         "https://maven.neoforged.net/releases/net/neoforged/neoforge/maven-metadata.xml";
+
+    internal const string ModrinthSearch = "https://api.modrinth.com/v2/search";
+    internal const string CurseForgeCategories = "https://api.curseforge.com/v1/categories";
+    internal const string CurseForgeModsSearch = "https://api.curseforge.com/v1/mods/search";
 }

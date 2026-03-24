@@ -4,6 +4,7 @@ using BlockiumLauncher.Application.Abstractions.Launch;
 using BlockiumLauncher.Application.Abstractions.Repositories;
 using BlockiumLauncher.Application.Abstractions.Services;
 using BlockiumLauncher.Application.UseCases.Accounts;
+using BlockiumLauncher.Application.UseCases.Catalog;
 using BlockiumLauncher.Application.UseCases.Install;
 using BlockiumLauncher.Application.UseCases.Instances;
 using BlockiumLauncher.Application.UseCases.Java;
@@ -33,8 +34,11 @@ public static class ServiceCollectionExtensions
         Services.AddSingleton(new JavaDiscoveryOptions());
 
         Services.AddHttpClient<IMetadataHttpClient, MetadataHttpClient>();
+        Services.AddHttpClient<CurseForgeContentCatalogService>();
 
         Services.AddSingleton<MojangVersionManifestClient>();
+        Services.AddSingleton<ModrinthContentCatalogService>();
+        Services.AddSingleton<CompositeContentCatalogService>();
         Services.AddSingleton<FabricMetadataClient>();
         Services.AddSingleton<QuiltMetadataClient>();
         Services.AddSingleton<ForgeMetadataClient>();
@@ -55,6 +59,9 @@ public static class ServiceCollectionExtensions
 
         Services.AddSingleton<IVersionManifestService, CachedVersionManifestService>();
         Services.AddSingleton<ILoaderMetadataService, CachedLoaderMetadataService>();
+        Services.AddSingleton<IContentCatalogProvider>(Provider => Provider.GetRequiredService<ModrinthContentCatalogService>());
+        Services.AddSingleton<IContentCatalogProvider>(Provider => Provider.GetRequiredService<CurseForgeContentCatalogService>());
+        Services.AddSingleton<IContentCatalogService, CompositeContentCatalogService>();
 
         Services.AddSingleton<ISecretRedactor, SensitiveDataRedactor>();
         Services.AddSingleton<IStructuredLogger, FileStructuredLogger>();
@@ -107,6 +114,7 @@ public static class ServiceCollectionExtensions
         Services.AddTransient<ListInstanceContentUseCase>();
         Services.AddTransient<RescanInstanceContentUseCase>();
         Services.AddTransient<SetModEnabledUseCase>();
+        Services.AddTransient<SearchCatalogUseCase>();
 
         Services.AddTransient<AddAccountUseCase>();
         Services.AddTransient<ListAccountsUseCase>();
