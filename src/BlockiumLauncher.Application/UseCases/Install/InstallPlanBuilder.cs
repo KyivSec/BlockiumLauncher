@@ -342,7 +342,7 @@ public sealed class InstallPlanBuilder
             if (OperatingSystem.IsWindows())
             {
                 return Path.Combine(
-                    Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                    Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
                     "BlockiumLauncher");
             }
 

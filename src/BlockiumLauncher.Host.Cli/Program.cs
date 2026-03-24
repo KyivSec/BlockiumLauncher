@@ -995,7 +995,7 @@ private static async Task<int> HandleLaunchPlanAsync(IServiceProvider servicePro
     {
         var outputPath = GetOptionalOption(args, "--output");
         var dumpDirectory = Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
             "BlockiumLauncher",
             "diagnostics");
 
@@ -1006,7 +1006,7 @@ private static async Task<int> HandleLaunchPlanAsync(IServiceProvider servicePro
             : Path.GetFullPath(outputPath);
 
         var logsDirectory = Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
             "BlockiumLauncher",
             "logs");
 
@@ -1023,7 +1023,7 @@ private static async Task<int> HandleLaunchPlanAsync(IServiceProvider servicePro
         var payload = new
         {
             CreatedAtUtc = DateTimeOffset.UtcNow,
-            AppDataRoot = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "BlockiumLauncher"),
+            AppDataRoot = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "BlockiumLauncher"),
             LogsDirectory = logsDirectory,
             LatestLogFile = latestLogFile,
             RecentLogLines = recentLogLines

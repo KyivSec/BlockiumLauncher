@@ -143,7 +143,7 @@ public sealed class LauncherPaths : ILauncherPaths
         if (OperatingSystem.IsWindows())
         {
             return Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
                 "BlockiumLauncher");
         }
 
