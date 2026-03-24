@@ -73,7 +73,9 @@ public static class ServiceCollectionExtensions
         Services.AddTransient<LegacyLoaderRuntimePreparer>();
   Services.AddTransient<ILoaderRuntimePreparer, LegacyLoaderRuntimePreparer>();
   Services.AddTransient<IFabricInstallOrchestrator, FabricInstallOrchestrator>();
+  Services.AddTransient<IQuiltInstallOrchestrator, QuiltInstallOrchestrator>();
   Services.AddTransient<ILoaderRuntimePreparer, FabricRuntimePreparer>();
+  Services.AddTransient<ILoaderRuntimePreparer, QuiltRuntimePreparer>();
   Services.AddTransient<INeoForgeInstallOrchestrator, NeoForgeInstallOrchestrator>();
   Services.AddTransient<ILoaderRuntimePreparer, NeoForgeRuntimePreparer>();
   Services.AddTransient<BlockiumLauncher.Application.Abstractions.Storage.IInstanceContentInstaller, BlockiumLauncher.Infrastructure.Storage.InstanceContentInstaller>();
