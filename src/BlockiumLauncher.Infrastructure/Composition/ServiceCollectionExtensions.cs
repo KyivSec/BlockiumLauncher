@@ -1,4 +1,4 @@
-using BlockiumLauncher.Application.Abstractions.Auth;
+﻿using BlockiumLauncher.Application.Abstractions.Auth;
 using BlockiumLauncher.Application.Abstractions.Diagnostics;
 using BlockiumLauncher.Application.Abstractions.Launch;
 using BlockiumLauncher.Application.Abstractions.Repositories;
@@ -77,7 +77,9 @@ public static class ServiceCollectionExtensions
   Services.AddTransient<ILoaderRuntimePreparer, FabricRuntimePreparer>();
   Services.AddTransient<ILoaderRuntimePreparer, QuiltRuntimePreparer>();
   Services.AddTransient<INeoForgeInstallOrchestrator, NeoForgeInstallOrchestrator>();
-  Services.AddTransient<ILoaderRuntimePreparer, NeoForgeRuntimePreparer>();
+        Services.AddTransient<IForgeInstallOrchestrator, ForgeInstallOrchestrator>();
+  Services.AddTransient<ILoaderRuntimePreparer, ForgeRuntimePreparer>();
+        Services.AddTransient<ILoaderRuntimePreparer, NeoForgeRuntimePreparer>();
   Services.AddTransient<BlockiumLauncher.Application.Abstractions.Storage.IInstanceContentInstaller, BlockiumLauncher.Infrastructure.Storage.InstanceContentInstaller>();
 
         Services.AddSingleton<BlockiumLauncher.Application.Abstractions.Security.ITokenStore, BlockiumLauncher.Infrastructure.Security.WindowsProtectedTokenStore>();
@@ -106,3 +108,4 @@ public static class ServiceCollectionExtensions
         return Services;
     }
 }
+

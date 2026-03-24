@@ -1,4 +1,4 @@
-using System.Linq;
+﻿using System.Linq;
 using BlockiumLauncher.Application.Abstractions.Storage;
 using BlockiumLauncher.Application.UseCases.Install;
 using BlockiumLauncher.Domain.Enums;
@@ -40,6 +40,7 @@ public sealed class InstanceContentInstaller : IInstanceContentInstaller
     {
         return loaderType switch
         {
+            LoaderType.Forge => FindFirstOfType<ForgeRuntimePreparer>(),
             LoaderType.NeoForge => FindFirstOfType<NeoForgeRuntimePreparer>(),
             LoaderType.Fabric => FindFirstOfType<FabricRuntimePreparer>(),
             LoaderType.Quilt => FindFirstOfType<QuiltRuntimePreparer>(),
