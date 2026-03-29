@@ -1,8 +1,0 @@
-using BlockiumLauncher.Domain.ValueObjects;
-
-namespace BlockiumLauncher.Application.UseCases.Install;
-
-public sealed class VerifyInstanceFilesRequest
-{
-    public InstanceId InstanceId { get; init; } = default!;
-}
