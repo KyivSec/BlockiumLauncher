@@ -309,103 +309,30 @@ public sealed class ImportCatalogModpackUseCase
             return Result<ImportCatalogModpackResult>.Failure(extractResult.Error);
         }
 
-        var manifestResult = await ReadManifestAsync(extractRoot, cancellationToken).ConfigureAwait(false);
-        if (manifestResult.IsFailure)
+        var importContextResult = request.Provider switch
         {
-            return Result<ImportCatalogModpackResult>.Failure(manifestResult.Error);
+            CatalogProvider.CurseForge => await ImportCurseForgeArchiveAsync(
+                extractRoot,
+                workspace,
+                request,
+                cancellationToken).ConfigureAwait(false),
+            CatalogProvider.Modrinth => await ImportModrinthArchiveAsync(
+                extractRoot,
+                workspace,
+                request,
+                cancellationToken).ConfigureAwait(false),
+            _ => Result<CatalogModpackImportContext>.Failure(CatalogFileErrors.ModpackManifestInvalid)
+        };
+
+        if (importContextResult.IsFailure)
+        {
+            return Result<ImportCatalogModpackResult>.Failure(importContextResult.Error);
         }
 
-        var manifest = manifestResult.Value;
-        if (!TryResolveLoader(manifest, out var loaderType, out var loaderVersion))
-        {
-            return Result<ImportCatalogModpackResult>.Failure(CatalogFileErrors.ModpackLoaderUnsupported);
-        }
-
-        var installResult = await installInstanceUseCase.ExecuteAsync(new InstallInstanceRequest
-        {
-            InstanceName = request.InstanceName,
-            GameVersion = manifest.Minecraft.Version,
-            LoaderType = loaderType,
-            LoaderVersion = loaderVersion,
-            TargetDirectory = request.TargetDirectory,
-            OverwriteIfExists = request.OverwriteIfExists,
-            DownloadRuntime = request.DownloadRuntime
-        }, cancellationToken).ConfigureAwait(false);
-
-        if (installResult.IsFailure)
-        {
-            return Result<ImportCatalogModpackResult>.Failure(installResult.Error);
-        }
-
-        var instance = installResult.Value.Instance;
-        var stageRoot = workspace.GetPath("content-stage");
-        Directory.CreateDirectory(stageRoot);
-
-        var overridesRoot = string.IsNullOrWhiteSpace(manifest.Overrides)
-            ? Path.Combine(extractRoot, "overrides")
-            : Path.Combine(extractRoot, manifest.Overrides);
-
-        if (Directory.Exists(overridesRoot))
-        {
-            CatalogInstallSupport.CopyDirectoryContents(overridesRoot, stageRoot, overwrite: true);
-        }
-
-        var sources = new Dictionary<string, ContentSourceMetadata>(StringComparer.OrdinalIgnoreCase);
-        var pendingManualDownloads = new List<PendingManualDownloadFile>();
-        foreach (var fileReference in manifest.Files)
-        {
-            var fileResult = await contentCatalogFileService.ResolveFileAsync(new CatalogFileResolutionQuery
-            {
-                Provider = request.Provider,
-                ContentType = CatalogContentType.Mod,
-                ProjectId = fileReference.ProjectId.ToString(),
-                FileId = fileReference.FileId.ToString()
-            }, cancellationToken).ConfigureAwait(false);
-
-            if (fileResult.IsFailure)
-            {
-                return Result<ImportCatalogModpackResult>.Failure(fileResult.Error);
-            }
-
-            var file = fileResult.Value;
-            var relativePath = CatalogInstallSupport.ResolveInstalledRelativePath(CatalogContentType.Mod, file.FileName);
-
-            if (file.RequiresManualDownload || string.IsNullOrWhiteSpace(file.DownloadUrl))
-            {
-                pendingManualDownloads.Add(new PendingManualDownloadFile
-                {
-                    Provider = file.Provider,
-                    ContentType = CatalogContentType.Mod,
-                    ProjectId = file.ProjectId,
-                    FileId = file.FileId,
-                    DisplayName = file.DisplayName,
-                    FileName = file.FileName,
-                    DestinationRelativePath = relativePath,
-                    ProjectUrl = file.ProjectUrl,
-                    FilePageUrl = file.FilePageUrl ?? file.ProjectUrl,
-                    Sha1 = file.Sha1,
-                    SizeBytes = file.SizeBytes
-                });
-
-                continue;
-            }
-
-            var stagedPath = workspace.GetPath(Path.Combine("content-stage", relativePath.Replace('/', Path.DirectorySeparatorChar)));
-            var downloadResult = await downloader.DownloadAsync(
-                new DownloadRequest(new Uri(file.DownloadUrl), stagedPath, file.Sha1),
-                cancellationToken).ConfigureAwait(false);
-
-            if (downloadResult.IsFailure)
-            {
-                return Result<ImportCatalogModpackResult>.Failure(downloadResult.Error);
-            }
-
-            sources[relativePath] = CatalogInstallSupport.BuildSourceMetadata(file);
-        }
-
-        CatalogInstallSupport.CopyDirectoryContents(stageRoot, installResult.Value.InstalledPath, overwrite: true);
-
-        var metadata = await instanceContentMetadataService.ApplySourcesAsync(instance, sources, cancellationToken).ConfigureAwait(false);
+        var importContext = importContextResult.Value;
+        var instance = importContext.Instance;
+        var metadata = importContext.Metadata;
+        var pendingManualDownloads = importContext.PendingManualDownloads;
 
         if (pendingManualDownloads.Count > 0)
         {
@@ -439,7 +366,7 @@ public sealed class ImportCatalogModpackUseCase
                 {
                     Instance = resumeResult.Value.Instance,
                     File = modpackFile,
-                    InstalledPath = installResult.Value.InstalledPath,
+                    InstalledPath = importContext.InstalledPath,
                     Metadata = await instanceContentMetadataService.GetAsync(instance, reindexIfMissing: true, cancellationToken).ConfigureAwait(false) ?? metadata,
                     DownloadsDirectory = resumeResult.Value.DownloadsDirectory,
                     PendingManualDownloads = resumeResult.Value.PendingManualDownloads
@@ -455,7 +382,7 @@ public sealed class ImportCatalogModpackUseCase
         {
             Instance = instance,
             File = modpackFile,
-            InstalledPath = installResult.Value.InstalledPath,
+            InstalledPath = importContext.InstalledPath,
             Metadata = metadata,
             DownloadsDirectory = downloadsDirectory,
             PendingManualDownloads = pendingManualDownloads
@@ -556,7 +483,7 @@ public sealed class ImportCatalogModpackUseCase
         }
     }
 
-    private static async Task<Result<CurseForgeModpackManifest>> ReadManifestAsync(string extractRoot, CancellationToken cancellationToken)
+    internal static async Task<Result<CurseForgeModpackManifest>> ReadManifestAsync(string extractRoot, CancellationToken cancellationToken)
     {
         var manifestPath = Path.Combine(extractRoot, "manifest.json");
         if (!File.Exists(manifestPath))
@@ -583,7 +510,202 @@ public sealed class ImportCatalogModpackUseCase
         }
     }
 
-    private static bool TryResolveLoader(CurseForgeModpackManifest manifest, out LoaderType loaderType, out string? loaderVersion)
+    private async Task<Result<CatalogModpackImportContext>> ImportCurseForgeArchiveAsync(
+        string extractRoot,
+        ITempWorkspace workspace,
+        ImportCatalogModpackRequest request,
+        CancellationToken cancellationToken)
+    {
+        var manifestResult = await ReadManifestAsync(extractRoot, cancellationToken).ConfigureAwait(false);
+        if (manifestResult.IsFailure)
+        {
+            return Result<CatalogModpackImportContext>.Failure(manifestResult.Error);
+        }
+
+        var manifest = manifestResult.Value;
+        if (!TryResolveLoader(manifest, out var loaderType, out var loaderVersion))
+        {
+            return Result<CatalogModpackImportContext>.Failure(CatalogFileErrors.ModpackLoaderUnsupported);
+        }
+
+        var installResult = await installInstanceUseCase.ExecuteAsync(new InstallInstanceRequest
+        {
+            InstanceName = request.InstanceName,
+            GameVersion = manifest.Minecraft.Version,
+            LoaderType = loaderType,
+            LoaderVersion = loaderVersion,
+            TargetDirectory = request.TargetDirectory,
+            OverwriteIfExists = request.OverwriteIfExists,
+            DownloadRuntime = request.DownloadRuntime
+        }, cancellationToken).ConfigureAwait(false);
+
+        if (installResult.IsFailure)
+        {
+            return Result<CatalogModpackImportContext>.Failure(installResult.Error);
+        }
+
+        var stageRoot = workspace.GetPath("content-stage");
+        Directory.CreateDirectory(stageRoot);
+
+        var overridesRoot = string.IsNullOrWhiteSpace(manifest.Overrides)
+            ? Path.Combine(extractRoot, "overrides")
+            : Path.Combine(extractRoot, manifest.Overrides);
+
+        if (Directory.Exists(overridesRoot))
+        {
+            CatalogInstallSupport.CopyDirectoryContents(overridesRoot, stageRoot, overwrite: true);
+        }
+
+        var sources = new Dictionary<string, ContentSourceMetadata>(StringComparer.OrdinalIgnoreCase);
+        var pendingManualDownloads = new List<PendingManualDownloadFile>();
+        foreach (var fileReference in manifest.Files)
+        {
+            var fileResult = await contentCatalogFileService.ResolveFileAsync(new CatalogFileResolutionQuery
+            {
+                Provider = request.Provider,
+                ContentType = CatalogContentType.Mod,
+                ProjectId = fileReference.ProjectId.ToString(),
+                FileId = fileReference.FileId.ToString()
+            }, cancellationToken).ConfigureAwait(false);
+
+            if (fileResult.IsFailure)
+            {
+                return Result<CatalogModpackImportContext>.Failure(fileResult.Error);
+            }
+
+            var file = fileResult.Value;
+            var relativePath = CatalogInstallSupport.ResolveInstalledRelativePath(CatalogContentType.Mod, file.FileName);
+
+            if (file.RequiresManualDownload || string.IsNullOrWhiteSpace(file.DownloadUrl))
+            {
+                pendingManualDownloads.Add(new PendingManualDownloadFile
+                {
+                    Provider = file.Provider,
+                    ContentType = CatalogContentType.Mod,
+                    ProjectId = file.ProjectId,
+                    FileId = file.FileId,
+                    DisplayName = file.DisplayName,
+                    FileName = file.FileName,
+                    DestinationRelativePath = relativePath,
+                    ProjectUrl = file.ProjectUrl,
+                    FilePageUrl = file.FilePageUrl ?? file.ProjectUrl,
+                    Sha1 = file.Sha1,
+                    SizeBytes = file.SizeBytes
+                });
+
+                continue;
+            }
+
+            var stagedPath = workspace.GetPath(Path.Combine("content-stage", relativePath.Replace('/', Path.DirectorySeparatorChar)));
+            var downloadResult = await downloader.DownloadAsync(
+                new DownloadRequest(new Uri(file.DownloadUrl), stagedPath, file.Sha1),
+                cancellationToken).ConfigureAwait(false);
+
+            if (downloadResult.IsFailure)
+            {
+                return Result<CatalogModpackImportContext>.Failure(downloadResult.Error);
+            }
+
+            sources[relativePath] = CatalogInstallSupport.BuildSourceMetadata(file);
+        }
+
+        CatalogInstallSupport.CopyDirectoryContents(stageRoot, installResult.Value.InstalledPath, overwrite: true);
+        var metadata = await instanceContentMetadataService
+            .ApplySourcesAsync(installResult.Value.Instance, sources, cancellationToken)
+            .ConfigureAwait(false);
+
+        return Result<CatalogModpackImportContext>.Success(new CatalogModpackImportContext
+        {
+            Instance = installResult.Value.Instance,
+            InstalledPath = installResult.Value.InstalledPath,
+            Metadata = metadata,
+            PendingManualDownloads = pendingManualDownloads
+        });
+    }
+
+    private async Task<Result<CatalogModpackImportContext>> ImportModrinthArchiveAsync(
+        string extractRoot,
+        ITempWorkspace workspace,
+        ImportCatalogModpackRequest request,
+        CancellationToken cancellationToken)
+    {
+        var manifestResult = await ReadModrinthManifestAsync(extractRoot, cancellationToken).ConfigureAwait(false);
+        if (manifestResult.IsFailure)
+        {
+            return Result<CatalogModpackImportContext>.Failure(manifestResult.Error);
+        }
+
+        var manifest = manifestResult.Value;
+        if (!TryResolveLoader(manifest, out var loaderType, out var loaderVersion))
+        {
+            return Result<CatalogModpackImportContext>.Failure(CatalogFileErrors.ModpackLoaderUnsupported);
+        }
+
+        var installResult = await installInstanceUseCase.ExecuteAsync(new InstallInstanceRequest
+        {
+            InstanceName = request.InstanceName,
+            GameVersion = manifest.Dependencies.Minecraft,
+            LoaderType = loaderType,
+            LoaderVersion = loaderVersion,
+            TargetDirectory = request.TargetDirectory,
+            OverwriteIfExists = request.OverwriteIfExists,
+            DownloadRuntime = request.DownloadRuntime
+        }, cancellationToken).ConfigureAwait(false);
+
+        if (installResult.IsFailure)
+        {
+            return Result<CatalogModpackImportContext>.Failure(installResult.Error);
+        }
+
+        var stageRoot = workspace.GetPath("content-stage");
+        Directory.CreateDirectory(stageRoot);
+        CopyModrinthOverrideDirectories(extractRoot, stageRoot);
+
+        var sources = new Dictionary<string, ContentSourceMetadata>(StringComparer.OrdinalIgnoreCase);
+        foreach (var file in manifest.Files)
+        {
+            var downloadUrl = file.Downloads
+                .FirstOrDefault(static item => Uri.TryCreate(item, UriKind.Absolute, out _));
+            if (string.IsNullOrWhiteSpace(downloadUrl))
+            {
+                return Result<CatalogModpackImportContext>.Failure(CatalogFileErrors.DownloadUrlMissing);
+            }
+
+            var relativePath = CatalogInstallSupport.NormalizeRelativePath(file.Path);
+            var stagedPath = workspace.GetPath(Path.Combine("content-stage", relativePath.Replace('/', Path.DirectorySeparatorChar)));
+            var downloadResult = await downloader.DownloadAsync(
+                new DownloadRequest(new Uri(downloadUrl), stagedPath, file.Hashes.Sha1),
+                cancellationToken).ConfigureAwait(false);
+
+            if (downloadResult.IsFailure)
+            {
+                return Result<CatalogModpackImportContext>.Failure(downloadResult.Error);
+            }
+
+            var source = BuildModrinthSourceMetadata(relativePath, request.Provider, file.ProjectId, file.FileId, downloadUrl);
+            if (source is not null)
+            {
+                sources[relativePath] = source;
+            }
+        }
+
+        CatalogInstallSupport.CopyDirectoryContents(stageRoot, installResult.Value.InstalledPath, overwrite: true);
+        var metadata = await instanceContentMetadataService
+            .ApplySourcesAsync(installResult.Value.Instance, sources, cancellationToken)
+            .ConfigureAwait(false);
+
+        await manualDownloadStateStore.DeleteAsync(installResult.Value.Instance.InstallLocation, cancellationToken).ConfigureAwait(false);
+
+        return Result<CatalogModpackImportContext>.Success(new CatalogModpackImportContext
+        {
+            Instance = installResult.Value.Instance,
+            InstalledPath = installResult.Value.InstalledPath,
+            Metadata = metadata,
+            PendingManualDownloads = []
+        });
+    }
+
+    internal static bool TryResolveLoader(CurseForgeModpackManifest manifest, out LoaderType loaderType, out string? loaderVersion)
     {
         loaderType = LoaderType.Vanilla;
         loaderVersion = null;
@@ -623,6 +745,112 @@ public sealed class ImportCatalogModpackUseCase
             default:
                 return false;
         }
+    }
+
+    internal static async Task<Result<ModrinthModpackManifest>> ReadModrinthManifestAsync(string extractRoot, CancellationToken cancellationToken)
+    {
+        var manifestPath = Path.Combine(extractRoot, "modrinth.index.json");
+        if (!File.Exists(manifestPath))
+        {
+            return Result<ModrinthModpackManifest>.Failure(CatalogFileErrors.ModpackManifestInvalid);
+        }
+
+        try
+        {
+            var json = await File.ReadAllTextAsync(manifestPath, cancellationToken).ConfigureAwait(false);
+            var manifest = JsonSerializer.Deserialize<ModrinthModpackManifest>(json);
+            if (manifest is null ||
+                manifest.Dependencies is null ||
+                string.IsNullOrWhiteSpace(manifest.Dependencies.Minecraft))
+            {
+                return Result<ModrinthModpackManifest>.Failure(CatalogFileErrors.ModpackManifestInvalid);
+            }
+
+            return Result<ModrinthModpackManifest>.Success(manifest);
+        }
+        catch (JsonException)
+        {
+            return Result<ModrinthModpackManifest>.Failure(CatalogFileErrors.ModpackManifestInvalid);
+        }
+    }
+
+    internal static bool TryResolveLoader(ModrinthModpackManifest manifest, out LoaderType loaderType, out string? loaderVersion)
+    {
+        loaderType = LoaderType.Vanilla;
+        loaderVersion = null;
+
+        if (!string.IsNullOrWhiteSpace(manifest.Dependencies.FabricLoader))
+        {
+            loaderType = LoaderType.Fabric;
+            loaderVersion = manifest.Dependencies.FabricLoader;
+            return true;
+        }
+
+        if (!string.IsNullOrWhiteSpace(manifest.Dependencies.QuiltLoader))
+        {
+            loaderType = LoaderType.Quilt;
+            loaderVersion = manifest.Dependencies.QuiltLoader;
+            return true;
+        }
+
+        if (!string.IsNullOrWhiteSpace(manifest.Dependencies.NeoForge))
+        {
+            loaderType = LoaderType.NeoForge;
+            loaderVersion = manifest.Dependencies.NeoForge;
+            return true;
+        }
+
+        if (!string.IsNullOrWhiteSpace(manifest.Dependencies.Forge))
+        {
+            loaderType = LoaderType.Forge;
+            loaderVersion = manifest.Dependencies.Forge;
+            return true;
+        }
+
+        return true;
+    }
+
+    internal static void CopyModrinthOverrideDirectories(string extractRoot, string stageRoot)
+    {
+        foreach (var relativeDirectory in new[] { "overrides", "client-overrides" })
+        {
+            var fullPath = Path.Combine(extractRoot, relativeDirectory);
+            if (Directory.Exists(fullPath))
+            {
+                CatalogInstallSupport.CopyDirectoryContents(fullPath, stageRoot, overwrite: true);
+            }
+        }
+    }
+
+    internal static ContentSourceMetadata? BuildModrinthSourceMetadata(
+        string relativePath,
+        CatalogProvider provider,
+        string? projectId,
+        string? fileId,
+        string? originalUrl)
+    {
+        var contentType = relativePath.Replace('\\', '/').TrimStart('/').Split('/', StringSplitOptions.RemoveEmptyEntries) switch
+        {
+            ["mods", ..] => "mod",
+            ["resourcepacks", ..] => "resourcepack",
+            ["shaderpacks", ..] => "shader",
+            _ => null
+        };
+
+        if (contentType is null)
+        {
+            return null;
+        }
+
+        return new ContentSourceMetadata
+        {
+            Provider = provider == CatalogProvider.Modrinth ? ContentOriginProvider.Modrinth : ContentOriginProvider.Unknown,
+            ContentType = contentType,
+            ProjectId = string.IsNullOrWhiteSpace(projectId) ? null : projectId,
+            FileId = string.IsNullOrWhiteSpace(fileId) ? null : fileId,
+            OriginalUrl = originalUrl,
+            AcquiredAtUtc = DateTimeOffset.UtcNow
+        };
     }
 }
 
@@ -906,4 +1134,63 @@ internal sealed class CurseForgeModpackFileReference
 
     [JsonPropertyName("fileID")]
     public long FileId { get; init; }
+}
+
+internal sealed class ModrinthModpackManifest
+{
+    [JsonPropertyName("files")]
+    public IReadOnlyList<ModrinthModpackFileReference> Files { get; init; } = [];
+
+    [JsonPropertyName("dependencies")]
+    public ModrinthModpackDependencies Dependencies { get; init; } = new();
+}
+
+internal sealed class ModrinthModpackDependencies
+{
+    [JsonPropertyName("minecraft")]
+    public string Minecraft { get; init; } = string.Empty;
+
+    [JsonPropertyName("fabric-loader")]
+    public string? FabricLoader { get; init; }
+
+    [JsonPropertyName("quilt-loader")]
+    public string? QuiltLoader { get; init; }
+
+    [JsonPropertyName("forge")]
+    public string? Forge { get; init; }
+
+    [JsonPropertyName("neoforge")]
+    public string? NeoForge { get; init; }
+}
+
+internal sealed class ModrinthModpackFileReference
+{
+    [JsonPropertyName("path")]
+    public string Path { get; init; } = string.Empty;
+
+    [JsonPropertyName("downloads")]
+    public IReadOnlyList<string> Downloads { get; init; } = [];
+
+    [JsonPropertyName("hashes")]
+    public ModrinthModpackHashes Hashes { get; init; } = new();
+
+    [JsonPropertyName("project_id")]
+    public string? ProjectId { get; init; }
+
+    [JsonPropertyName("file_id")]
+    public string? FileId { get; init; }
+}
+
+internal sealed class ModrinthModpackHashes
+{
+    [JsonPropertyName("sha1")]
+    public string? Sha1 { get; init; }
+}
+
+internal sealed class CatalogModpackImportContext
+{
+    public LauncherInstance Instance { get; init; } = default!;
+    public string InstalledPath { get; init; } = string.Empty;
+    public InstanceContentMetadata Metadata { get; init; } = default!;
+    public IReadOnlyList<PendingManualDownloadFile> PendingManualDownloads { get; init; } = [];
 }

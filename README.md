@@ -146,7 +146,25 @@ Common filters:
 
 ### CurseForge
 
-CurseForge catalog listing requires `CURSEFORGE_API_KEY`.
+CurseForge catalog listing requires an API key. The launcher now supports storing that key in the platform secret store when available:
+
+- Windows: DPAPI-backed encrypted secret file under the launcher data directory
+- macOS: Keychain via the `security` command
+- Linux: Secret Service via `secret-tool`
+
+Preferred setup:
+
+```powershell
+dotnet run --project src/BlockiumLauncher.Cli -- catalog key set
+```
+
+You can inspect the current key source without printing the key itself:
+
+```powershell
+dotnet run --project src/BlockiumLauncher.Cli -- catalog key status
+```
+
+Environment variable fallback:
 
 Windows PowerShell:
 

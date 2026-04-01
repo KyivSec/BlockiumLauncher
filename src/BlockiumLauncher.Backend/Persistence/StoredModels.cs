@@ -34,6 +34,36 @@ public sealed class StoredLauncherAccount
     public DateTimeOffset? ValidatedAtUtc { get; set; }
 }
 
+public sealed class StoredSkinAsset
+{
+    public string SkinId { get; set; } = string.Empty;
+    public string DisplayName { get; set; } = string.Empty;
+    public string FileName { get; set; } = string.Empty;
+    public string ModelType { get; set; } = string.Empty;
+    public DateTimeOffset ImportedAtUtc { get; set; }
+}
+
+public sealed class StoredCapeAsset
+{
+    public string CapeId { get; set; } = string.Empty;
+    public string DisplayName { get; set; } = string.Empty;
+    public string FileName { get; set; } = string.Empty;
+    public DateTimeOffset ImportedAtUtc { get; set; }
+}
+
+public sealed class StoredAccountAppearance
+{
+    public string AccountId { get; set; } = string.Empty;
+    public string? SelectedSkinId { get; set; }
+    public string? SelectedCapeId { get; set; }
+}
+
+public sealed class StoredSkinLibrary
+{
+    public List<StoredSkinAsset> Skins { get; set; } = [];
+    public List<StoredCapeAsset> Capes { get; set; } = [];
+}
+
 public sealed class StoredLauncherInstance
 {
     public string InstanceId { get; set; } = string.Empty;

@@ -22,6 +22,38 @@ public interface IContentCatalogService
         CancellationToken cancellationToken = default);
 }
 
+public interface IContentCatalogDetailsProvider
+{
+    CatalogProvider Provider { get; }
+
+    Task<Result<CatalogProjectDetails>> GetProjectDetailsAsync(
+        CatalogProjectDetailsQuery query,
+        CancellationToken cancellationToken = default);
+}
+
+public interface IContentCatalogDetailsService
+{
+    Task<Result<CatalogProjectDetails>> GetProjectDetailsAsync(
+        CatalogProjectDetailsQuery query,
+        CancellationToken cancellationToken = default);
+}
+
+public interface IContentCatalogMetadataProvider
+{
+    CatalogProvider Provider { get; }
+
+    Task<Result<CatalogProviderMetadata>> GetMetadataAsync(
+        CatalogProviderMetadataQuery query,
+        CancellationToken cancellationToken = default);
+}
+
+public interface IContentCatalogMetadataService
+{
+    Task<Result<CatalogProviderMetadata>> GetMetadataAsync(
+        CatalogProviderMetadataQuery query,
+        CancellationToken cancellationToken = default);
+}
+
 public interface IContentCatalogFileProvider
 {
     CatalogProvider Provider { get; }

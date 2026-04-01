@@ -36,9 +36,15 @@ internal static class MetadataEndpoints
     internal const string ForgeMavenMetadata = "https://maven.minecraftforge.net/net/minecraftforge/forge/maven-metadata.xml";
     internal const string NeoForgeMavenMetadata = "https://maven.neoforged.net/releases/net/neoforged/neoforge/maven-metadata.xml";
     internal const string ModrinthSearch = "https://api.modrinth.com/v2/search";
+    internal const string ModrinthCategories = "https://api.modrinth.com/v2/tag/category";
+    internal const string ModrinthLoaders = "https://api.modrinth.com/v2/tag/loader";
+    internal const string ModrinthGameVersions = "https://api.modrinth.com/v2/tag/game_version";
+    internal static string ModrinthProject(string projectId) => $"https://api.modrinth.com/v2/project/{Uri.EscapeDataString(projectId)}";
+    internal static string ModrinthProjectVersions(string projectId) => $"https://api.modrinth.com/v2/project/{Uri.EscapeDataString(projectId)}/version";
     internal const string CurseForgeCategories = "https://api.curseforge.com/v1/categories";
     internal const string CurseForgeModsSearch = "https://api.curseforge.com/v1/mods/search";
     internal static string CurseForgeMod(string modId) => $"https://api.curseforge.com/v1/mods/{modId}";
+    internal static string CurseForgeModDescription(string modId) => $"https://api.curseforge.com/v1/mods/{modId}/description";
     internal static string CurseForgeModFiles(string modId) => $"https://api.curseforge.com/v1/mods/{modId}/files";
     internal static string CurseForgeModFile(string modId, string fileId) => $"https://api.curseforge.com/v1/mods/{modId}/files/{fileId}";
     internal static string CurseForgeModFileDownloadUrl(string modId, string fileId) => $"https://api.curseforge.com/v1/mods/{modId}/files/{fileId}/download-url";

@@ -1,6 +1,7 @@
 using BlockiumLauncher.Application.Abstractions.Instances;
 using BlockiumLauncher.Application.Abstractions.Repositories;
 using BlockiumLauncher.Application.Abstractions.Services;
+using BlockiumLauncher.Application.UseCases.Common;
 using BlockiumLauncher.Domain.Entities;
 using BlockiumLauncher.Domain.Enums;
 using BlockiumLauncher.Domain.ValueObjects;
@@ -137,6 +138,67 @@ namespace BlockiumLauncher.Application.UseCases.Instances
 
 namespace BlockiumLauncher.Application.UseCases.Instances
 {
+    public sealed class ListInstanceBrowserSummariesUseCase
+    {
+        private readonly IInstanceRepository instanceRepository;
+        private readonly IInstanceContentMetadataService instanceContentMetadataService;
+
+        public ListInstanceBrowserSummariesUseCase(
+            IInstanceRepository instanceRepository,
+            IInstanceContentMetadataService instanceContentMetadataService)
+        {
+            this.instanceRepository = instanceRepository ?? throw new ArgumentNullException(nameof(instanceRepository));
+            this.instanceContentMetadataService = instanceContentMetadataService ?? throw new ArgumentNullException(nameof(instanceContentMetadataService));
+        }
+
+        public async Task<Result<IReadOnlyList<InstanceBrowserSummary>>> ExecuteAsync(
+            ListInstancesRequest? request,
+            CancellationToken cancellationToken = default)
+        {
+            request ??= new ListInstancesRequest();
+
+            var instances = await instanceRepository.ListAsync(cancellationToken).ConfigureAwait(false);
+            var visibleInstances = request.IncludeDeleted
+                ? instances
+                : instances.Where(static instance => instance.State != InstanceState.Deleted).ToArray();
+
+            var summaries = new List<InstanceBrowserSummary>(visibleInstances.Count);
+            foreach (var instance in visibleInstances)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+
+                var metadata = await instanceContentMetadataService
+                    .GetAsync(instance, reindexIfMissing: true, cancellationToken)
+                    .ConfigureAwait(false);
+
+                summaries.Add(new InstanceBrowserSummary(
+                    instance.InstanceId,
+                    instance.Name,
+                    instance.GameVersion.ToString(),
+                    instance.LoaderType,
+                    instance.LoaderVersion?.ToString(),
+                    instance.State,
+                    instance.CreatedAtUtc,
+                    instance.LastPlayedAtUtc ?? metadata?.LastLaunchAtUtc,
+                    metadata?.TotalPlaytimeSeconds ?? 0,
+                    instance.InstallLocation,
+                    ResolveIconPath(instance, metadata)));
+            }
+
+            return Result<IReadOnlyList<InstanceBrowserSummary>>.Success(summaries);
+        }
+
+        private static string? ResolveIconPath(LauncherInstance instance, InstanceContentMetadata? metadata)
+        {
+            if (!string.IsNullOrWhiteSpace(metadata?.IconPath))
+            {
+                return metadata.IconPath;
+            }
+
+            return string.IsNullOrWhiteSpace(instance.IconKey) ? null : instance.IconKey;
+        }
+    }
+
     public sealed class ListInstanceContentUseCase
     {
         private readonly IInstanceRepository instanceRepository;

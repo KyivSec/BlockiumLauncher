@@ -1,5 +1,6 @@
 using BlockiumLauncher.Application.Abstractions.Instances;
 using BlockiumLauncher.Application.UseCases.Common;
+using BlockiumLauncher.Application.UseCases.Skins;
 using BlockiumLauncher.Domain.Entities;
 using BlockiumLauncher.Domain.Enums;
 using BlockiumLauncher.Domain.ValueObjects;
@@ -14,6 +15,23 @@ public interface IAccountRepository
     Task<LauncherAccount?> GetDefaultAsync(CancellationToken CancellationToken = default);
     Task SaveAsync(LauncherAccount Account, CancellationToken CancellationToken = default);
     Task DeleteAsync(AccountId AccountId, CancellationToken CancellationToken = default);
+}
+
+public interface ISkinLibraryRepository
+{
+    Task<IReadOnlyList<SkinAssetSummary>> ListSkinsAsync(CancellationToken cancellationToken = default);
+    Task<SkinAssetSummary?> GetSkinByIdAsync(string skinId, CancellationToken cancellationToken = default);
+    Task SaveSkinAsync(SkinAssetSummary skin, CancellationToken cancellationToken = default);
+
+    Task<IReadOnlyList<CapeAssetSummary>> ListCapesAsync(CancellationToken cancellationToken = default);
+    Task<CapeAssetSummary?> GetCapeByIdAsync(string capeId, CancellationToken cancellationToken = default);
+    Task SaveCapeAsync(CapeAssetSummary cape, CancellationToken cancellationToken = default);
+}
+
+public interface IAccountAppearanceRepository
+{
+    Task<AccountAppearanceSelection?> GetAsync(AccountId accountId, CancellationToken cancellationToken = default);
+    Task SaveAsync(AccountAppearanceSelection selection, CancellationToken cancellationToken = default);
 }
 
 public interface IInstanceContentMetadataRepository

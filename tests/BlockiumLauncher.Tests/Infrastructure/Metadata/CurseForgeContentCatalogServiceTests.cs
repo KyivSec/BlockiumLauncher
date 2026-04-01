@@ -112,6 +112,226 @@ public sealed class CurseForgeContentCatalogServiceTests
     }
 
     [Fact]
+    public async Task SearchAsync_AppliesMultiSelectFiltersClientSide()
+    {
+        var handler = new FakeHttpMessageHandler((request, cancellationToken) =>
+        {
+            var url = request.RequestUri!.ToString();
+
+            if (url.Contains("/v1/categories?gameId=432&classesOnly=true", StringComparison.Ordinal))
+            {
+                return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new StringContent("""
+                        {
+                          "data": [
+                            { "id": 4471, "name": "Modpacks", "slug": "modpacks", "isClass": true }
+                          ]
+                        }
+                        """)
+                });
+            }
+
+            if (url.Contains("/v1/categories?gameId=432&classId=4471", StringComparison.Ordinal))
+            {
+                return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new StringContent("""
+                        {
+                          "data": [
+                            { "id": 1, "name": "Adventure", "slug": "adventure" },
+                            { "id": 2, "name": "Kitchen Sink", "slug": "kitchen-sink" }
+                          ]
+                        }
+                        """)
+                });
+            }
+
+            if (url.Contains("/v1/mods/search?", StringComparison.Ordinal))
+            {
+                Assert.DoesNotContain("gameVersion=", url, StringComparison.Ordinal);
+                Assert.DoesNotContain("modLoaderType=", url, StringComparison.Ordinal);
+
+                return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new StringContent("""
+                        {
+                          "data": [
+                            {
+                              "id": 2001,
+                              "name": "Matching Pack",
+                              "slug": "matching-pack",
+                              "summary": "Expected item",
+                              "downloadCount": 200,
+                              "thumbsUpCount": 11,
+                              "dateCreated": "2026-03-01T00:00:00Z",
+                              "dateModified": "2026-03-10T00:00:00Z",
+                              "authors": [ { "name": "alice" } ],
+                              "categories": [ { "name": "Adventure" } ],
+                              "latestFilesIndexes": [
+                                { "gameVersion": "1.21.1", "modLoader": 4 }
+                              ]
+                            },
+                            {
+                              "id": 2002,
+                              "name": "Filtered Pack",
+                              "slug": "filtered-pack",
+                              "summary": "Should be removed",
+                              "downloadCount": 50,
+                              "thumbsUpCount": 3,
+                              "dateCreated": "2026-03-01T00:00:00Z",
+                              "dateModified": "2026-03-10T00:00:00Z",
+                              "authors": [ { "name": "bob" } ],
+                              "categories": [ { "name": "Kitchen Sink" } ],
+                              "latestFilesIndexes": [
+                                { "gameVersion": "1.18.2", "modLoader": 1 }
+                              ]
+                            }
+                          ]
+                        }
+                        """)
+                });
+            }
+
+            throw new InvalidOperationException($"Unexpected request URL: {url}");
+        });
+
+        var service = new CurseForgeContentCatalogService(
+            new HttpClient(handler),
+            new CurseForgeOptions { ApiKey = "test-key" });
+        var result = await service.SearchAsync(new CatalogSearchQuery
+        {
+            Provider = CatalogProvider.CurseForge,
+            ContentType = CatalogContentType.Modpack,
+            GameVersions = ["1.21.1", "1.20.6"],
+            Loaders = ["forge", "fabric"],
+            Categories = ["Adventure"]
+        });
+
+        Assert.True(result.IsSuccess, result.IsFailure ? result.Error.Message : string.Empty);
+        var item = Assert.Single(result.Value);
+        Assert.Equal("2001", item.ProjectId);
+    }
+
+    [Fact]
+    public async Task GetProjectDetailsAsync_ParsesHtmlDescription()
+    {
+        var handler = new FakeHttpMessageHandler((request, cancellationToken) =>
+        {
+            var url = request.RequestUri!.ToString();
+
+            if (url.EndsWith("/v1/mods/1001", StringComparison.Ordinal))
+            {
+                return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new StringContent("""
+                    {
+                      "data": {
+                        "id": 1001,
+                        "name": "Example Modpack",
+                        "slug": "example-modpack",
+                        "summary": "Short summary",
+                        "downloadCount": 321,
+                        "thumbsUpCount": 22,
+                        "dateCreated": "2026-03-01T00:00:00Z",
+                        "dateModified": "2026-03-12T00:00:00Z",
+                        "links": { "websiteUrl": "https://www.curseforge.com/minecraft/modpacks/example-modpack" },
+                        "logo": { "url": "https://example.invalid/logo.png" },
+                        "authors": [ { "name": "alice" } ],
+                        "categories": [ { "name": "Adventure" } ],
+                        "latestFilesIndexes": [
+                          { "gameVersion": "1.21.1", "modLoader": 4 }
+                        ]
+                      }
+                    }
+                    """)
+                });
+            }
+
+            if (url.EndsWith("/v1/mods/1001/description", StringComparison.Ordinal))
+            {
+                return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new StringContent("""{ "data": "<h1>Overview</h1><p>Rich HTML body.</p>" }""")
+                });
+            }
+
+            throw new InvalidOperationException($"Unexpected request URL: {url}");
+        });
+
+        var service = new CurseForgeContentCatalogService(
+            new HttpClient(handler),
+            new CurseForgeOptions { ApiKey = "test-key" });
+
+        var result = await service.GetProjectDetailsAsync(new CatalogProjectDetailsQuery
+        {
+            Provider = CatalogProvider.CurseForge,
+            ContentType = CatalogContentType.Modpack,
+            ProjectId = "1001"
+        });
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal(CatalogDescriptionFormat.Html, result.Value.DescriptionFormat);
+        Assert.Equal("<h1>Overview</h1><p>Rich HTML body.</p>", result.Value.DescriptionContent);
+        Assert.Equal("Example Modpack", result.Value.Title);
+    }
+
+    [Fact]
+    public async Task GetMetadataAsync_ParsesCategories()
+    {
+        var handler = new FakeHttpMessageHandler((request, cancellationToken) =>
+        {
+            var url = request.RequestUri!.ToString();
+
+            if (url.Contains("/v1/categories?gameId=432&classesOnly=true", StringComparison.Ordinal))
+            {
+                return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new StringContent("""
+                    {
+                      "data": [
+                        { "id": 4471, "name": "Modpacks", "slug": "modpacks", "isClass": true }
+                      ]
+                    }
+                    """)
+                });
+            }
+
+            if (url.Contains("/v1/categories?gameId=432&classId=4471", StringComparison.Ordinal))
+            {
+                return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new StringContent("""
+                    {
+                      "data": [
+                        { "id": 1, "name": "Adventure" },
+                        { "id": 2, "name": "Tech" }
+                      ]
+                    }
+                    """)
+                });
+            }
+
+            throw new InvalidOperationException($"Unexpected request URL: {url}");
+        });
+
+        var service = new CurseForgeContentCatalogService(
+            new HttpClient(handler),
+            new CurseForgeOptions { ApiKey = "test-key" });
+
+        var result = await service.GetMetadataAsync(new CatalogProviderMetadataQuery
+        {
+            Provider = CatalogProvider.CurseForge,
+            ContentType = CatalogContentType.Modpack
+        });
+
+        Assert.True(result.IsSuccess);
+        Assert.Contains("Adventure", result.Value.Categories);
+        Assert.Contains("forge", result.Value.Loaders, StringComparer.OrdinalIgnoreCase);
+        Assert.Contains(CatalogSearchSort.Updated, result.Value.SortOptions);
+    }
+
+    [Fact]
     public async Task GetFilesAsync_ParsesCurseForgeFileList()
     {
         var handler = new FakeHttpMessageHandler((request, cancellationToken) =>

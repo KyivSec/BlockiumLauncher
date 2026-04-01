@@ -10,9 +10,25 @@ using BlockiumLauncher.Shared.Results;
 
 namespace BlockiumLauncher.Infrastructure.Metadata.Clients;
 
-public sealed class CurseForgeContentCatalogService : IContentCatalogProvider, IContentCatalogFileProvider
+public sealed class CurseForgeContentCatalogService : IContentCatalogProvider, IContentCatalogDetailsProvider, IContentCatalogMetadataProvider, IContentCatalogFileProvider
 {
     private const int MinecraftGameId = 432;
+    private static readonly CatalogSearchSort[] SupportedSorts =
+    [
+        CatalogSearchSort.Relevance,
+        CatalogSearchSort.Downloads,
+        CatalogSearchSort.Follows,
+        CatalogSearchSort.Newest,
+        CatalogSearchSort.Updated
+    ];
+
+    private static readonly string[] SupportedLoaders =
+    [
+        "forge",
+        "fabric",
+        "quilt",
+        "neoforge"
+    ];
 
     private readonly HttpClient httpClient;
     private readonly CurseForgeOptions options;
@@ -51,13 +67,15 @@ public sealed class CurseForgeContentCatalogService : IContentCatalogProvider, I
             return Result<IReadOnlyList<CatalogProjectSummary>>.Failure(classIdResult.Error);
         }
 
+        var requestedGameVersions = MergeRequestedValues(query.GameVersions, query.GameVersion);
+        var requestedLoaders = MergeRequestedValues(query.Loaders, query.Loader);
         var categoryIdsResult = await ResolveCategoryIdsAsync(classIdResult.Value, query.Categories, apiKey, cancellationToken).ConfigureAwait(false);
         if (categoryIdsResult.IsFailure)
         {
             return Result<IReadOnlyList<CatalogProjectSummary>>.Failure(categoryIdsResult.Error);
         }
 
-        var requestUri = BuildSearchUri(query, classIdResult.Value, categoryIdsResult.Value);
+        var requestUri = BuildSearchUri(query, classIdResult.Value, categoryIdsResult.Value, requestedGameVersions, requestedLoaders);
         var response = await GetStringAsync(requestUri, apiKey, cancellationToken).ConfigureAwait(false);
         if (response.IsFailure)
         {
@@ -78,7 +96,7 @@ public sealed class CurseForgeContentCatalogService : IContentCatalogProvider, I
 
             foreach (var item in dataElement.EnumerateArray())
             {
-                items.Add(new CatalogProjectSummary
+                var summary = new CatalogProjectSummary
                 {
                     Provider = CatalogProvider.CurseForge,
                     ContentType = query.ContentType,
@@ -96,7 +114,14 @@ public sealed class CurseForgeContentCatalogService : IContentCatalogProvider, I
                     Categories = GetCategoryNames(item),
                     GameVersions = GetGameVersions(item),
                     Loaders = GetLoaders(item)
-                });
+                };
+
+                if (!MatchesRequestedFilters(summary, requestedGameVersions, requestedLoaders, query.Categories))
+                {
+                    continue;
+                }
+
+                items.Add(summary);
             }
 
             return Result<IReadOnlyList<CatalogProjectSummary>>.Success(items);
@@ -105,6 +130,131 @@ public sealed class CurseForgeContentCatalogService : IContentCatalogProvider, I
         {
             return Result<IReadOnlyList<CatalogProjectSummary>>.Failure(
                 MetadataErrors.InvalidPayload("Failed to parse the CurseForge catalog response.", exception.Message));
+        }
+    }
+
+    public async Task<Result<CatalogProjectDetails>> GetProjectDetailsAsync(
+        CatalogProjectDetailsQuery query,
+        CancellationToken cancellationToken = default)
+    {
+        var apiKeyResult = ResolveApiKey();
+        if (apiKeyResult.IsFailure)
+        {
+            return Result<CatalogProjectDetails>.Failure(apiKeyResult.Error);
+        }
+
+        var projectResponse = await GetStringAsync(new Uri(MetadataEndpoints.CurseForgeMod(query.ProjectId)), apiKeyResult.Value, cancellationToken)
+            .ConfigureAwait(false);
+        if (projectResponse.IsFailure)
+        {
+            return Result<CatalogProjectDetails>.Failure(projectResponse.Error);
+        }
+
+        var descriptionResponse = await GetStringAsync(new Uri(MetadataEndpoints.CurseForgeModDescription(query.ProjectId)), apiKeyResult.Value, cancellationToken)
+            .ConfigureAwait(false);
+        if (descriptionResponse.IsFailure)
+        {
+            return Result<CatalogProjectDetails>.Failure(descriptionResponse.Error);
+        }
+
+        try
+        {
+            using var projectDocument = JsonDocument.Parse(projectResponse.Value);
+            using var descriptionDocument = JsonDocument.Parse(descriptionResponse.Value);
+
+            if (!projectDocument.RootElement.TryGetProperty("data", out var projectElement) ||
+                projectElement.ValueKind != JsonValueKind.Object)
+            {
+                return Result<CatalogProjectDetails>.Failure(
+                    MetadataErrors.InvalidPayload("CurseForge project response did not contain a valid data object."));
+            }
+
+            var descriptionHtml = GetString(descriptionDocument.RootElement, "data");
+
+            return Result<CatalogProjectDetails>.Success(new CatalogProjectDetails
+            {
+                Provider = CatalogProvider.CurseForge,
+                ContentType = query.ContentType,
+                ProjectId = GetInt64(projectElement, "id").ToString(),
+                Slug = GetString(projectElement, "slug"),
+                Title = GetString(projectElement, "name"),
+                Summary = GetString(projectElement, "summary"),
+                Author = GetPrimaryAuthor(projectElement),
+                Downloads = GetInt64(projectElement, "downloadCount"),
+                Follows = GetInt64(projectElement, "thumbsUpCount"),
+                PublishedAtUtc = GetDateTimeOffset(projectElement, "dateCreated"),
+                UpdatedAtUtc = GetDateTimeOffset(projectElement, "dateModified"),
+                IconUrl = GetNestedString(projectElement, "logo", "url"),
+                ProjectUrl = GetNestedString(projectElement, "links", "websiteUrl"),
+                DescriptionFormat = CatalogDescriptionFormat.Html,
+                DescriptionContent = descriptionHtml,
+                Categories = GetCategoryNames(projectElement),
+                GameVersions = GetGameVersions(projectElement),
+                Loaders = GetLoaders(projectElement)
+            });
+        }
+        catch (JsonException exception)
+        {
+            return Result<CatalogProjectDetails>.Failure(
+                MetadataErrors.InvalidPayload("Failed to parse the CurseForge project details response.", exception.Message));
+        }
+    }
+
+    public async Task<Result<CatalogProviderMetadata>> GetMetadataAsync(
+        CatalogProviderMetadataQuery query,
+        CancellationToken cancellationToken = default)
+    {
+        var apiKeyResult = ResolveApiKey();
+        if (apiKeyResult.IsFailure)
+        {
+            return Result<CatalogProviderMetadata>.Failure(apiKeyResult.Error);
+        }
+
+        var classIdResult = await ResolveClassIdAsync(query.ContentType, apiKeyResult.Value, cancellationToken).ConfigureAwait(false);
+        if (classIdResult.IsFailure)
+        {
+            return Result<CatalogProviderMetadata>.Failure(classIdResult.Error);
+        }
+
+        var categoriesUri = new Uri($"{MetadataEndpoints.CurseForgeCategories}?gameId={MinecraftGameId}&classId={classIdResult.Value}");
+        var categoriesResponse = await GetStringAsync(categoriesUri, apiKeyResult.Value, cancellationToken).ConfigureAwait(false);
+        if (categoriesResponse.IsFailure)
+        {
+            return Result<CatalogProviderMetadata>.Failure(categoriesResponse.Error);
+        }
+
+        try
+        {
+            using var categoriesDocument = JsonDocument.Parse(categoriesResponse.Value);
+            if (!categoriesDocument.RootElement.TryGetProperty("data", out var dataElement) ||
+                dataElement.ValueKind != JsonValueKind.Array)
+            {
+                return Result<CatalogProviderMetadata>.Failure(
+                    MetadataErrors.InvalidPayload("CurseForge categories response did not contain a valid data array."));
+            }
+
+            var categories = dataElement
+                .EnumerateArray()
+                .Select(category => GetString(category, "name"))
+                .Where(static item => !string.IsNullOrWhiteSpace(item))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .OrderBy(static item => item, StringComparer.OrdinalIgnoreCase)
+                .ToList();
+
+            return Result<CatalogProviderMetadata>.Success(new CatalogProviderMetadata
+            {
+                Provider = CatalogProvider.CurseForge,
+                ContentType = query.ContentType,
+                SortOptions = SupportedSorts,
+                Categories = categories,
+                GameVersions = [],
+                Loaders = SupportedLoaders
+            });
+        }
+        catch (JsonException exception)
+        {
+            return Result<CatalogProviderMetadata>.Failure(
+                MetadataErrors.InvalidPayload("Failed to parse the CurseForge metadata response.", exception.Message));
         }
     }
 
@@ -375,7 +525,12 @@ public sealed class CurseForgeContentCatalogService : IContentCatalogProvider, I
         return null;
     }
 
-    private static Uri BuildSearchUri(CatalogSearchQuery query, int classId, IReadOnlyList<int> categoryIds)
+    private static Uri BuildSearchUri(
+        CatalogSearchQuery query,
+        int classId,
+        IReadOnlyList<int> categoryIds,
+        IReadOnlyList<string> requestedGameVersions,
+        IReadOnlyList<string> requestedLoaders)
     {
         var parameters = new List<string>
         {
@@ -392,14 +547,14 @@ public sealed class CurseForgeContentCatalogService : IContentCatalogProvider, I
             parameters.Add($"searchFilter={Uri.EscapeDataString(query.Query.Trim())}");
         }
 
-        if (!string.IsNullOrWhiteSpace(query.GameVersion))
+        if (requestedGameVersions.Count == 1)
         {
-            parameters.Add($"gameVersion={Uri.EscapeDataString(query.GameVersion.Trim())}");
+            parameters.Add($"gameVersion={Uri.EscapeDataString(requestedGameVersions[0])}");
         }
 
-        if (!string.IsNullOrWhiteSpace(query.Loader))
+        if (requestedLoaders.Count == 1)
         {
-            var loaderType = MapLoader(query.Loader);
+            var loaderType = MapLoader(requestedLoaders[0]);
             if (loaderType is not null)
             {
                 parameters.Add($"modLoaderType={loaderType.Value}");
@@ -412,6 +567,50 @@ public sealed class CurseForgeContentCatalogService : IContentCatalogProvider, I
         }
 
         return new Uri($"{MetadataEndpoints.CurseForgeModsSearch}?{string.Join("&", parameters)}");
+    }
+
+    private static IReadOnlyList<string> MergeRequestedValues(IReadOnlyList<string> values, string? singleValue)
+    {
+        var merged = values
+            .Where(static value => !string.IsNullOrWhiteSpace(value))
+            .Select(static value => value.Trim())
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        if (!string.IsNullOrWhiteSpace(singleValue) &&
+            merged.All(existing => !string.Equals(existing, singleValue.Trim(), StringComparison.OrdinalIgnoreCase)))
+        {
+            merged.Add(singleValue.Trim());
+        }
+
+        return merged;
+    }
+
+    private static bool MatchesRequestedFilters(
+        CatalogProjectSummary summary,
+        IReadOnlyList<string> requestedGameVersions,
+        IReadOnlyList<string> requestedLoaders,
+        IReadOnlyList<string> requestedCategories)
+    {
+        if (requestedGameVersions.Count > 0 &&
+            !summary.GameVersions.Any(version => requestedGameVersions.Contains(version, StringComparer.OrdinalIgnoreCase)))
+        {
+            return false;
+        }
+
+        if (requestedLoaders.Count > 0 &&
+            !summary.Loaders.Any(loader => requestedLoaders.Contains(loader, StringComparer.OrdinalIgnoreCase)))
+        {
+            return false;
+        }
+
+        if (requestedCategories.Count > 0 &&
+            !summary.Categories.Any(category => requestedCategories.Contains(category, StringComparer.OrdinalIgnoreCase)))
+        {
+            return false;
+        }
+
+        return true;
     }
 
     private static Uri BuildFilesUri(CatalogFileQuery query)

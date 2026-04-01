@@ -9,6 +9,7 @@ using BlockiumLauncher.Application.UseCases.Install;
 using BlockiumLauncher.Application.UseCases.Instances;
 using BlockiumLauncher.Application.UseCases.Java;
 using BlockiumLauncher.Application.UseCases.Launch;
+using BlockiumLauncher.Application.UseCases.Skins;
 using BlockiumLauncher.Backend.Catalog;
 using BlockiumLauncher.Infrastructure.Auth;
 using BlockiumLauncher.Infrastructure.Diagnostics;
@@ -30,7 +31,14 @@ public static class ServiceCollectionExtensions
 {
     public static IServiceCollection AddBlockiumLauncherBackend(this IServiceCollection Services)
     {
-        Services.AddSingleton(CurseForgeOptions.FromEnvironment());
+        Services.AddSingleton(_ => new LauncherPaths(LauncherPaths.CreateDefault().RootDirectory));
+        Services.AddSingleton<BlockiumLauncher.Application.Abstractions.Paths.ILauncherPaths>(Provider => Provider.GetRequiredService<LauncherPaths>());
+        Services.AddSingleton<ILauncherPaths>(Provider => Provider.GetRequiredService<LauncherPaths>());
+
+        Services.AddSingleton<BlockiumLauncher.Application.Abstractions.Security.ISecretStore, BlockiumLauncher.Infrastructure.Security.PlatformSecretStore>();
+        Services.AddSingleton(Provider => CurseForgeOptions.FromConfiguration(
+            Provider.GetRequiredService<ILauncherPaths>(),
+            Provider.GetRequiredService<BlockiumLauncher.Application.Abstractions.Security.ISecretStore>()));
         Services.AddSingleton(new MetadataHttpOptions());
         Services.AddSingleton(new MetadataCachePolicy());
         Services.AddSingleton(new JavaDiscoveryOptions());
@@ -41,15 +49,14 @@ public static class ServiceCollectionExtensions
         Services.AddSingleton<MojangVersionManifestClient>();
         Services.AddSingleton<ModrinthContentCatalogService>();
         Services.AddSingleton<CompositeContentCatalogService>();
+        Services.AddSingleton<CompositeContentCatalogDetailsService>();
+        Services.AddSingleton<CompositeContentCatalogMetadataService>();
         Services.AddSingleton<CompositeContentCatalogFileService>();
         Services.AddSingleton<FabricMetadataClient>();
         Services.AddSingleton<QuiltMetadataClient>();
         Services.AddSingleton<ForgeMetadataClient>();
         Services.AddSingleton<NeoForgeMetadataClient>();
 
-        Services.AddSingleton(_ => new LauncherPaths(LauncherPaths.CreateDefault().RootDirectory));
-        Services.AddSingleton<BlockiumLauncher.Application.Abstractions.Paths.ILauncherPaths>(Provider => Provider.GetRequiredService<LauncherPaths>());
-        Services.AddSingleton<ILauncherPaths>(Provider => Provider.GetRequiredService<LauncherPaths>());
         Services.AddSingleton<ILauncherDataMigrationService, LauncherDataMigrationService>();
         Services.AddSingleton<ISharedContentLayout, SharedContentLayout>();
         Services.AddSingleton<JsonFileStore>();
@@ -59,14 +66,23 @@ public static class ServiceCollectionExtensions
         Services.AddSingleton<IInstanceRepository, JsonInstanceRepository>();
         Services.AddSingleton<IInstanceContentMetadataRepository, JsonInstanceContentMetadataRepository>();
         Services.AddSingleton<IJavaInstallationRepository, JsonJavaInstallationRepository>();
+        Services.AddSingleton<ISkinLibraryRepository, JsonSkinLibraryRepository>();
+        Services.AddSingleton<IAccountAppearanceRepository, JsonAccountAppearanceRepository>();
         Services.AddSingleton<IManualDownloadStateStore, JsonManualDownloadStateStore>();
 
         Services.AddSingleton<IVersionManifestService, CachedVersionManifestService>();
         Services.AddSingleton<ILoaderMetadataService, CachedLoaderMetadataService>();
         Services.AddSingleton<IContentCatalogProvider>(Provider => Provider.GetRequiredService<ModrinthContentCatalogService>());
         Services.AddSingleton<IContentCatalogProvider>(Provider => Provider.GetRequiredService<CurseForgeContentCatalogService>());
+        Services.AddSingleton<IContentCatalogDetailsProvider>(Provider => Provider.GetRequiredService<ModrinthContentCatalogService>());
+        Services.AddSingleton<IContentCatalogDetailsProvider>(Provider => Provider.GetRequiredService<CurseForgeContentCatalogService>());
+        Services.AddSingleton<IContentCatalogMetadataProvider>(Provider => Provider.GetRequiredService<ModrinthContentCatalogService>());
+        Services.AddSingleton<IContentCatalogMetadataProvider>(Provider => Provider.GetRequiredService<CurseForgeContentCatalogService>());
+        Services.AddSingleton<IContentCatalogFileProvider>(Provider => Provider.GetRequiredService<ModrinthContentCatalogService>());
         Services.AddSingleton<IContentCatalogFileProvider>(Provider => Provider.GetRequiredService<CurseForgeContentCatalogService>());
         Services.AddSingleton<IContentCatalogService, CompositeContentCatalogService>();
+        Services.AddSingleton<IContentCatalogDetailsService, CompositeContentCatalogDetailsService>();
+        Services.AddSingleton<IContentCatalogMetadataService, CompositeContentCatalogMetadataService>();
         Services.AddSingleton<IContentCatalogFileService, CompositeContentCatalogFileService>();
 
         Services.AddSingleton<ISecretRedactor, SensitiveDataRedactor>();
@@ -117,14 +133,21 @@ public static class ServiceCollectionExtensions
         Services.AddTransient<LaunchInstanceUseCase>();
         Services.AddTransient<GetLaunchStatusUseCase>();
         Services.AddTransient<StopLaunchUseCase>();
+        Services.AddTransient<ListInstanceBrowserSummariesUseCase>();
         Services.AddTransient<ListInstanceContentUseCase>();
         Services.AddTransient<RescanInstanceContentUseCase>();
         Services.AddTransient<SetModEnabledUseCase>();
         Services.AddTransient<SearchCatalogUseCase>();
+        Services.AddTransient<GetCatalogProjectDetailsUseCase>();
+        Services.AddTransient<GetCatalogProviderMetadataUseCase>();
         Services.AddTransient<ListCatalogFilesUseCase>();
         Services.AddTransient<InstallCatalogContentUseCase>();
         Services.AddTransient<ImportCatalogModpackUseCase>();
+        Services.AddTransient<ImportArchiveInstanceUseCase>();
         Services.AddTransient<ResumeCatalogModpackImportUseCase>();
+        Services.AddTransient<ConfigureCurseForgeApiKeyUseCase>();
+        Services.AddTransient<ClearCurseForgeApiKeyUseCase>();
+        Services.AddTransient<GetCurseForgeApiKeyStatusUseCase>();
 
         Services.AddTransient<AddAccountUseCase>();
         Services.AddTransient<ListAccountsUseCase>();
@@ -133,6 +156,13 @@ public static class ServiceCollectionExtensions
         Services.AddTransient<SignInMicrosoftUseCase>();
         Services.AddTransient<GetDefaultAccountUseCase>();
         Services.AddTransient<ResolveOfflineLaunchAccountUseCase>();
+        Services.AddTransient<ListSkinAssetsUseCase>();
+        Services.AddTransient<ImportSkinAssetUseCase>();
+        Services.AddTransient<UpdateSkinModelUseCase>();
+        Services.AddTransient<ListCapeAssetsUseCase>();
+        Services.AddTransient<ImportCapeAssetUseCase>();
+        Services.AddTransient<GetAccountAppearanceUseCase>();
+        Services.AddTransient<SetAccountAppearanceUseCase>();
 
         return Services;
     }

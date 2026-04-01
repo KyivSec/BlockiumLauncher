@@ -33,6 +33,62 @@ public sealed class CompositeContentCatalogService : IContentCatalogService
     }
 }
 
+public sealed class CompositeContentCatalogDetailsService : IContentCatalogDetailsService
+{
+    private readonly IReadOnlyDictionary<CatalogProvider, IContentCatalogDetailsProvider> providers;
+
+    public CompositeContentCatalogDetailsService(IEnumerable<IContentCatalogDetailsProvider> providers)
+    {
+        this.providers = providers?
+            .GroupBy(provider => provider.Provider)
+            .ToDictionary(group => group.Key, group => group.Last())
+            ?? throw new ArgumentNullException(nameof(providers));
+    }
+
+    public Task<Result<CatalogProjectDetails>> GetProjectDetailsAsync(
+        CatalogProjectDetailsQuery query,
+        CancellationToken cancellationToken = default)
+    {
+        if (!providers.TryGetValue(query.Provider, out var provider))
+        {
+            return Task.FromResult(Result<CatalogProjectDetails>.Failure(
+                new BlockiumLauncher.Shared.Errors.Error(
+                    "Catalog.ProviderNotSupported",
+                    $"The catalog provider '{query.Provider}' does not expose project details.")));
+        }
+
+        return provider.GetProjectDetailsAsync(query, cancellationToken);
+    }
+}
+
+public sealed class CompositeContentCatalogMetadataService : IContentCatalogMetadataService
+{
+    private readonly IReadOnlyDictionary<CatalogProvider, IContentCatalogMetadataProvider> providers;
+
+    public CompositeContentCatalogMetadataService(IEnumerable<IContentCatalogMetadataProvider> providers)
+    {
+        this.providers = providers?
+            .GroupBy(provider => provider.Provider)
+            .ToDictionary(group => group.Key, group => group.Last())
+            ?? throw new ArgumentNullException(nameof(providers));
+    }
+
+    public Task<Result<CatalogProviderMetadata>> GetMetadataAsync(
+        CatalogProviderMetadataQuery query,
+        CancellationToken cancellationToken = default)
+    {
+        if (!providers.TryGetValue(query.Provider, out var provider))
+        {
+            return Task.FromResult(Result<CatalogProviderMetadata>.Failure(
+                new BlockiumLauncher.Shared.Errors.Error(
+                    "Catalog.ProviderNotSupported",
+                    $"The catalog provider '{query.Provider}' does not expose metadata.")));
+        }
+
+        return provider.GetMetadataAsync(query, cancellationToken);
+    }
+}
+
 public sealed class CompositeContentCatalogFileService : IContentCatalogFileService
 {
     private readonly IReadOnlyDictionary<CatalogProvider, IContentCatalogFileProvider> providers;

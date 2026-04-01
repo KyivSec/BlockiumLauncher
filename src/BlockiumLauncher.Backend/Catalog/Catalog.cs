@@ -16,7 +16,9 @@ public sealed class SearchCatalogRequest
     public CatalogContentType ContentType { get; init; }
     public string? Query { get; init; }
     public string? GameVersion { get; init; }
+    public IReadOnlyList<string> GameVersions { get; init; } = [];
     public string? Loader { get; init; }
+    public IReadOnlyList<string> Loaders { get; init; } = [];
     public IReadOnlyList<string> Categories { get; init; } = [];
     public CatalogSearchSort Sort { get; init; } = CatalogSearchSort.Relevance;
     public int Limit { get; init; } = 20;
@@ -41,17 +43,39 @@ public sealed class SearchCatalogUseCase
             return Task.FromResult(Result<IReadOnlyList<CatalogProjectSummary>>.Failure(CatalogErrors.InvalidRequest));
         }
 
+        var gameVersions = MergeFilters(request.GameVersions, request.GameVersion);
+        var loaders = MergeFilters(request.Loaders, request.Loader);
+
         return contentCatalogService.SearchAsync(new CatalogSearchQuery
         {
             Provider = request.Provider,
             ContentType = request.ContentType,
             Query = request.Query,
-            GameVersion = request.GameVersion,
-            Loader = request.Loader,
+            GameVersion = gameVersions.Count == 1 ? gameVersions[0] : null,
+            GameVersions = gameVersions,
+            Loader = loaders.Count == 1 ? loaders[0] : null,
+            Loaders = loaders,
             Categories = request.Categories,
             Sort = request.Sort,
             Limit = request.Limit,
             Offset = request.Offset
         }, cancellationToken);
+    }
+
+    private static IReadOnlyList<string> MergeFilters(IReadOnlyList<string> values, string? singleValue)
+    {
+        var normalized = values
+            .Where(static value => !string.IsNullOrWhiteSpace(value))
+            .Select(static value => value.Trim())
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        if (!string.IsNullOrWhiteSpace(singleValue) &&
+            normalized.All(existing => !string.Equals(existing, singleValue.Trim(), StringComparison.OrdinalIgnoreCase)))
+        {
+            normalized.Add(singleValue.Trim());
+        }
+
+        return normalized;
     }
 }

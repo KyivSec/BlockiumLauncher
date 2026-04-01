@@ -39,6 +39,45 @@ namespace BlockiumLauncher.Application.UseCases.Common
         public IReadOnlyList<string> Loaders { get; init; } = [];
     }
 
+    public enum CatalogDescriptionFormat
+    {
+        PlainText = 0,
+        Markdown = 1,
+        Html = 2
+    }
+
+    public sealed class CatalogProjectDetails
+    {
+        public CatalogProvider Provider { get; init; } = CatalogProvider.Modrinth;
+        public CatalogContentType ContentType { get; init; }
+        public string ProjectId { get; init; } = string.Empty;
+        public string Slug { get; init; } = string.Empty;
+        public string Title { get; init; } = string.Empty;
+        public string Summary { get; init; } = string.Empty;
+        public string Author { get; init; } = string.Empty;
+        public long Downloads { get; init; }
+        public long Follows { get; init; }
+        public DateTimeOffset? PublishedAtUtc { get; init; }
+        public DateTimeOffset? UpdatedAtUtc { get; init; }
+        public string? IconUrl { get; init; }
+        public string? ProjectUrl { get; init; }
+        public CatalogDescriptionFormat DescriptionFormat { get; init; } = CatalogDescriptionFormat.PlainText;
+        public string DescriptionContent { get; init; } = string.Empty;
+        public IReadOnlyList<string> Categories { get; init; } = [];
+        public IReadOnlyList<string> GameVersions { get; init; } = [];
+        public IReadOnlyList<string> Loaders { get; init; } = [];
+    }
+
+    public sealed class CatalogProviderMetadata
+    {
+        public CatalogProvider Provider { get; init; } = CatalogProvider.Modrinth;
+        public CatalogContentType ContentType { get; init; }
+        public IReadOnlyList<CatalogSearchSort> SortOptions { get; init; } = [];
+        public IReadOnlyList<string> Categories { get; init; } = [];
+        public IReadOnlyList<string> GameVersions { get; init; } = [];
+        public IReadOnlyList<string> Loaders { get; init; } = [];
+    }
+
     public sealed class CatalogFileSummary
     {
         public CatalogProvider Provider { get; init; } = CatalogProvider.Modrinth;
@@ -71,7 +110,9 @@ namespace BlockiumLauncher.Application.UseCases.Common
         public CatalogContentType ContentType { get; init; }
         public string? Query { get; init; }
         public string? GameVersion { get; init; }
+        public IReadOnlyList<string> GameVersions { get; init; } = [];
         public string? Loader { get; init; }
+        public IReadOnlyList<string> Loaders { get; init; } = [];
         public IReadOnlyList<string> Categories { get; init; } = [];
         public CatalogSearchSort Sort { get; init; } = CatalogSearchSort.Relevance;
         public int Limit { get; init; } = 20;
@@ -99,6 +140,19 @@ namespace BlockiumLauncher.Application.UseCases.Common
         public string? Loader { get; init; }
     }
 
+    public sealed class CatalogProjectDetailsQuery
+    {
+        public CatalogProvider Provider { get; init; } = CatalogProvider.Modrinth;
+        public CatalogContentType ContentType { get; init; }
+        public string ProjectId { get; init; } = string.Empty;
+    }
+
+    public sealed class CatalogProviderMetadataQuery
+    {
+        public CatalogProvider Provider { get; init; } = CatalogProvider.Modrinth;
+        public CatalogContentType ContentType { get; init; }
+    }
+
     public enum CatalogSearchSort
     {
         Relevance = 0,
@@ -119,6 +173,19 @@ namespace BlockiumLauncher.Application.UseCases.Common
         DateTimeOffset? LastPlayedAtUtc,
         string InstallLocation,
         string? IconKey);
+
+    public sealed record InstanceBrowserSummary(
+        InstanceId InstanceId,
+        string Name,
+        string GameVersion,
+        LoaderType LoaderType,
+        string? LoaderVersion,
+        InstanceState State,
+        DateTimeOffset CreatedAtUtc,
+        DateTimeOffset? LastPlayedAtUtc,
+        long TotalPlaytimeSeconds,
+        string InstallLocation,
+        string? IconPath);
 
     public sealed record JavaInstallationSummary(
         JavaInstallationId JavaInstallationId,

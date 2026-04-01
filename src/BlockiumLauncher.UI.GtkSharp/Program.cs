@@ -1,16 +1,35 @@
-﻿using Gtk;
-using Microsoft.Extensions.DependencyInjection;
+using BlockiumLauncher.Backend.Composition;
+using BlockiumLauncher.UI.GtkSharp.Services;
+using BlockiumLauncher.UI.GtkSharp.Styling;
 using BlockiumLauncher.UI.GtkSharp.Windows;
+using Gtk;
+using Microsoft.Extensions.DependencyInjection;
 
-var Services = new ServiceCollection();
+var services = new ServiceCollection();
 
-Services.AddSingleton<MainWindow>();
+services.AddBlockiumLauncherBackend();
+services.AddSingleton<LauncherUiSettingsStore>();
+services.AddSingleton<LauncherUiPreferencesService>();
+services.AddSingleton<LauncherGtkThemeService>();
+services.AddSingleton<InstanceBrowserRefreshService>();
+services.AddSingleton<AddInstanceWindow>();
+services.AddSingleton<SkinCustomizationWindow>();
+services.AddSingleton<AccountsWindow>();
+services.AddSingleton<SettingsWindow>();
+services.AddSingleton<MainWindow>();
 
-using var ServiceProvider = Services.BuildServiceProvider();
+await using var serviceProvider = services.BuildServiceProvider();
+
+var uiPreferences = serviceProvider.GetRequiredService<LauncherUiPreferencesService>();
+await uiPreferences.InitializeAsync();
+
+LauncherFontBootstrapper.Initialize();
 
 Application.Init();
 
-var MainWindow = ServiceProvider.GetRequiredService<MainWindow>();
-MainWindow.ShowAll();
+serviceProvider.GetRequiredService<LauncherGtkThemeService>().Initialize();
+
+var mainWindow = serviceProvider.GetRequiredService<MainWindow>();
+mainWindow.ShowAll();
 
 Application.Run();
