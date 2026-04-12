@@ -40,6 +40,47 @@ public sealed class JsonInstanceContentMetadataRepository : IInstanceContentMeta
     }
 }
 
+public sealed class JsonInstanceModpackMetadataRepository : IInstanceModpackMetadataRepository
+{
+    private readonly AppLauncherPaths launcherPaths;
+    private readonly JsonFileStore jsonFileStore;
+
+    public JsonInstanceModpackMetadataRepository(
+        AppLauncherPaths launcherPaths,
+        JsonFileStore jsonFileStore)
+    {
+        this.launcherPaths = launcherPaths ?? throw new ArgumentNullException(nameof(launcherPaths));
+        this.jsonFileStore = jsonFileStore ?? throw new ArgumentNullException(nameof(jsonFileStore));
+    }
+
+    public Task<InstanceModpackMetadata?> LoadAsync(string installLocation, CancellationToken cancellationToken = default)
+    {
+        return jsonFileStore.ReadOptionalAsync<InstanceModpackMetadata>(
+            launcherPaths.GetInstanceModpackMetadataFilePath(installLocation),
+            cancellationToken);
+    }
+
+    public Task SaveAsync(string installLocation, InstanceModpackMetadata metadata, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(metadata);
+        return jsonFileStore.WriteAsync(
+            launcherPaths.GetInstanceModpackMetadataFilePath(installLocation),
+            metadata,
+            cancellationToken);
+    }
+
+    public Task DeleteAsync(string installLocation, CancellationToken cancellationToken = default)
+    {
+        var path = launcherPaths.GetInstanceModpackMetadataFilePath(installLocation);
+        if (File.Exists(path))
+        {
+            File.Delete(path);
+        }
+
+        return Task.CompletedTask;
+    }
+}
+
 public sealed class JsonInstanceRepository : IInstanceRepository
 {
     private readonly ILauncherPaths LauncherPaths;
@@ -123,6 +164,8 @@ public sealed class JsonInstanceRepository : IInstanceRepository
             {
                 MinMemoryMb = Instance.LaunchProfile.MinMemoryMb,
                 MaxMemoryMb = Instance.LaunchProfile.MaxMemoryMb,
+                PreferredJavaMajor = Instance.LaunchProfile.PreferredJavaMajor,
+                SkipCompatibilityChecks = Instance.LaunchProfile.SkipCompatibilityChecks,
                 ExtraJvmArgs = Instance.LaunchProfile.ExtraJvmArgs.ToList(),
                 ExtraGameArgs = Instance.LaunchProfile.ExtraGameArgs.ToList(),
                 EnvironmentVariables = new Dictionary<string, string>(Instance.LaunchProfile.EnvironmentVariables, StringComparer.Ordinal)
@@ -145,7 +188,9 @@ public sealed class JsonInstanceRepository : IInstanceRepository
                 Stored.LaunchProfile.MaxMemoryMb,
                 Stored.LaunchProfile.ExtraJvmArgs ?? [],
                 Stored.LaunchProfile.ExtraGameArgs ?? [],
-                Stored.LaunchProfile.EnvironmentVariables ?? new Dictionary<string, string>(StringComparer.Ordinal)),
+                Stored.LaunchProfile.EnvironmentVariables ?? new Dictionary<string, string>(StringComparer.Ordinal),
+                Stored.LaunchProfile.PreferredJavaMajor,
+                Stored.LaunchProfile.SkipCompatibilityChecks),
             Stored.IconKey);
 
         switch (Stored.State)

@@ -4,7 +4,7 @@ using BlockiumLauncher.UI.GtkSharp.Services;
 
 namespace BlockiumLauncher.UI.GtkSharp.Styling;
 
-internal sealed record LauncherThemePalette(
+public sealed record LauncherThemePalette(
     string WindowBackground,
     string TopbarBackground,
     string TopbarBorder,
@@ -38,80 +38,6 @@ internal sealed record LauncherThemePalette(
     string SectionMutedBackground,
     string Accent);
 
-internal static class LauncherThemePaletteFactory
-{
-    public static LauncherThemePalette Create(bool isDarkTheme)
-    {
-        return isDarkTheme
-            ? new LauncherThemePalette(
-                WindowBackground: "#0f141a",
-                TopbarBackground: "#18212b",
-                TopbarBorder: "#2a3744",
-                SidebarBackground: "#14202a",
-                SidebarBorder: "#263442",
-                ContentBackground: "#111820",
-                ContentBorder: "#1e2a35",
-                PrimaryText: "#edf3f8",
-                SecondaryText: "#9cb0c2",
-                StatusText: "#73d49c",
-                ToolbarButtonBackground: "#202b36",
-                ToolbarButtonHover: "#273544",
-                ToolbarBorder: "#334251",
-                ActionButtonBackground: "#1d2833",
-                ActionButtonHover: "#24313d",
-                ActionBorder: "#31404f",
-                PrimaryButton: "#2e7be6",
-                PrimaryButtonHover: "#4f95ef",
-                DangerBackground: "#352326",
-                DangerHover: "#422b2f",
-                DangerText: "#f2a9a9",
-                DangerBorder: "#5a373d",
-                RowBackground: "#111820",
-                RowHover: "#18222d",
-                RowSelected: "#1a2734",
-                SearchBackground: "#17212b",
-                SearchBorder: "#2e3b48",
-                PopoverBackground: "#1a232d",
-                PopoverBorder: "#334251",
-                SectionBackground: "#16202a",
-                SectionMutedBackground: "#1a2530",
-                Accent: "#2e7be6")
-            : new LauncherThemePalette(
-                WindowBackground: "#eef3f8",
-                TopbarBackground: "#e6edf5",
-                TopbarBorder: "#cbd6e1",
-                SidebarBackground: "#dbe6f0",
-                SidebarBorder: "#c8d4de",
-                ContentBackground: "#ffffff",
-                ContentBorder: "#e1e8ef",
-                PrimaryText: "#22303c",
-                SecondaryText: "#617386",
-                StatusText: "#2a7a53",
-                ToolbarButtonBackground: "#f3f7fb",
-                ToolbarButtonHover: "#fbfdff",
-                ToolbarBorder: "#cad5df",
-                ActionButtonBackground: "#f7f9fc",
-                ActionButtonHover: "#ffffff",
-                ActionBorder: "#c9d3dc",
-                PrimaryButton: "#2e7be6",
-                PrimaryButtonHover: "#276fd1",
-                DangerBackground: "#f8f1f1",
-                DangerHover: "#fcecec",
-                DangerText: "#9f4343",
-                DangerBorder: "#d8c6c6",
-                RowBackground: "#ffffff",
-                RowHover: "#f5f9fd",
-                RowSelected: "#edf4fd",
-                SearchBackground: "#f7f9fc",
-                SearchBorder: "#d2dce5",
-                PopoverBackground: "#ffffff",
-                PopoverBorder: "#d2dce5",
-                SectionBackground: "#ffffff",
-                SectionMutedBackground: "#f7f9fc",
-                Accent: "#2e7be6");
-    }
-}
-
 public sealed class LauncherGtkThemeService
 {
     private readonly CssProvider CssProvider = new();
@@ -143,7 +69,7 @@ public sealed class LauncherGtkThemeService
 
     private void Reload()
     {
-        var palette = LauncherThemePaletteFactory.Create(UiPreferences.IsDarkTheme);
+        var palette = UiPreferences.CurrentPalette;
         CssProvider.LoadFromData(BuildCss(palette));
     }
 
@@ -174,15 +100,53 @@ public sealed class LauncherGtkThemeService
             dialog .dialog-vbox,
             dialog .content-area,
             dialog box,
-            viewport {
-                background: {{palette.WindowBackground}};
+            viewport,
+            .launcher-window-root,
+            .launcher-window-root viewport,
+            .launcher-window-root box {
+                background: {{palette.ContentBackground}};
                 color: {{palette.PrimaryText}};
+            }
+
+            .settings-window,
+            .settings-window > box {
+                background: {{palette.WindowBackground}};
             }
 
             dialog .dialog-action-area,
             dialog actionbar {
                 background: {{palette.TopbarBackground}};
                 border-top: 1px solid {{palette.TopbarBorder}};
+            }
+
+            .launcher-dialog-shell,
+            .launcher-dialog-shell viewport,
+            .launcher-dialog-shell box,
+            .launcher-section-shell,
+            .launcher-section-shell viewport,
+            .launcher-section-shell box {
+                background: {{palette.ContentBackground}};
+                color: {{palette.PrimaryText}};
+            }
+
+            .launcher-dialog-shell {
+                border: 1px solid {{palette.TopbarBorder}};
+            }
+
+            .launcher-window-root {
+                background: {{palette.ContentBackground}};
+            }
+
+            .launcher-body {
+                background: {{palette.ContentBackground}};
+            }
+
+            .launcher-section-shell {
+                border: 0;
+            }
+
+            .launcher-dialog-footer {
+                padding-top: 6px;
             }
 
             button,
@@ -200,8 +164,46 @@ public sealed class LauncherGtkThemeService
                 background: {{palette.SearchBackground}};
                 color: {{palette.PrimaryText}};
                 border: 1px solid {{palette.SearchBorder}};
-                min-height: 22px;
-                padding: 8px 10px;
+                min-height: 18px;
+                padding: 6px 8px;
+            }
+
+            spinbutton {
+                background: {{palette.SearchBackground}};
+                color: {{palette.PrimaryText}};
+                border: 1px solid {{palette.SearchBorder}};
+                min-height: 18px;
+                padding: 0;
+            }
+
+            spinbutton entry {
+                background: transparent;
+                color: {{palette.PrimaryText}};
+                border: 0;
+                box-shadow: none;
+                padding: 6px 8px;
+            }
+
+            spinbutton button {
+                background: {{palette.ActionButtonBackground}};
+                color: {{palette.PrimaryText}};
+                border: 0;
+                border-left: 1px solid {{palette.SearchBorder}};
+                box-shadow: none;
+                min-width: 22px;
+                padding: 0;
+            }
+
+            spinbutton button:hover {
+                background: {{palette.ActionButtonHover}};
+            }
+
+            spinbutton button:disabled,
+            spinbutton:disabled,
+            spinbutton:disabled entry {
+                background: {{palette.SectionMutedBackground}};
+                color: {{palette.SecondaryText}};
+                border-color: {{palette.ContentBorder}};
             }
 
             entry placeholder {
@@ -213,8 +215,8 @@ public sealed class LauncherGtkThemeService
                 background: {{palette.SearchBackground}};
                 color: {{palette.PrimaryText}};
                 border: 1px solid {{palette.SearchBorder}};
-                min-height: 22px;
-                padding: 8px 10px;
+                min-height: 18px;
+                padding: 6px 8px;
             }
 
             entry selection,
@@ -226,6 +228,7 @@ public sealed class LauncherGtkThemeService
             entry:focus,
             combobox:focus,
             combobox box.linked button:focus,
+            spinbutton:focus,
             .app-field:focus,
             .app-combo-field:focus,
             .app-combo-field box.linked button:focus {
@@ -242,8 +245,8 @@ public sealed class LauncherGtkThemeService
             }
 
             entry.app-search-field {
-                min-height: 18px;
-                padding: 6px 10px;
+                min-height: 16px;
+                padding: 5px 8px;
             }
 
             .app-field-label {
@@ -275,7 +278,12 @@ public sealed class LauncherGtkThemeService
 
             headerbar.topbar-shell {
                 min-height: 0;
-                padding: 8px 14px;
+                padding: 4px 10px;
+            }
+
+            headerbar.topbar-shell.dialog-topbar-shell {
+                min-height: 0;
+                padding: 4px 10px;
             }
 
             headerbar.topbar-shell:backdrop {
@@ -283,12 +291,41 @@ public sealed class LauncherGtkThemeService
                 background-image: none;
             }
 
+            headerbar.topbar-shell box,
+            headerbar.topbar-shell box.horizontal,
+            headerbar.topbar-shell box.vertical,
+            headerbar.topbar-shell widget,
+            headerbar.topbar-shell centerbox,
+            headerbar.topbar-shell decoration {
+                background: transparent;
+                background-image: none;
+                box-shadow: none;
+                border: 0;
+            }
+
             .topbar-content,
             .toolbar-group,
             .browser-controls,
             .sidebar-actions,
-            .popover-content {
+            .popover-content,
+            .launcher-popover-content {
                 background: transparent;
+            }
+
+            popover.background > box,
+            popover.background box,
+            popover.background scrolledwindow,
+            popover.background viewport,
+            popover.background frame {
+                background: {{palette.PopoverBackground}};
+                background-image: none;
+            }
+
+            popover.background scrolledwindow,
+            popover.background viewport,
+            popover.background frame {
+                border: 0;
+                box-shadow: none;
             }
 
             .sidebar-shell {
@@ -302,7 +339,7 @@ public sealed class LauncherGtkThemeService
 
             .sidebar-summary {
                 border-bottom: 1px solid {{palette.SidebarBorder}};
-                padding-bottom: 16px;
+                padding-bottom: 12px;
             }
 
             .instance-name,
@@ -314,9 +351,33 @@ public sealed class LauncherGtkThemeService
                 font-weight: 600;
             }
 
+            .settings-page-title-link,
+            .settings-page-title-link:hover,
+            .settings-page-title-link:active,
+            .settings-page-title-link:focus,
+            .settings-page-title-link:disabled {
+                padding: 0;
+                margin: 0;
+                min-height: 0;
+                min-width: 0;
+                border: 0;
+                border-radius: 0;
+                background: transparent;
+                background-image: none;
+                box-shadow: none;
+            }
+
+            .settings-page-title-link .settings-page-title {
+                color: {{palette.Accent}};
+            }
+
+            .settings-page-title-link:disabled .settings-page-title {
+                color: {{palette.PrimaryText}};
+            }
+
             .instance-name,
             .settings-title {
-                font-size: 16px;
+                font-size: 15px;
             }
 
             .secondary-text,
@@ -328,14 +389,22 @@ public sealed class LauncherGtkThemeService
                 color: {{palette.SecondaryText}};
                 font-family: {{LauncherFontBootstrapper.PreferredBodyFontFamily}};
                 font-weight: 400;
-                font-size: 13px;
+                font-size: 12px;
+            }
+
+            headerbar.topbar-shell.dialog-topbar-shell .settings-title {
+                font-size: 14px;
+            }
+
+            headerbar.topbar-shell.dialog-topbar-shell .settings-subtitle {
+                font-size: 11px;
             }
 
             .settings-section-title {
                 color: {{palette.PrimaryText}};
                 font-family: {{LauncherFontBootstrapper.PreferredTitleFontFamily}};
                 font-weight: 600;
-                font-size: 14px;
+                font-size: 13px;
             }
 
             .status-text,
@@ -355,13 +424,26 @@ public sealed class LauncherGtkThemeService
                 background: {{palette.ToolbarButtonBackground}};
                 color: {{palette.PrimaryText}};
                 border: 1px solid {{palette.ToolbarBorder}};
-                padding: 7px 12px;
+                padding: 5px 10px;
             }
 
             .toolbar-button:hover,
             .square-icon-button:hover,
             .theme-toggle-button:hover {
                 background: {{palette.ToolbarButtonHover}};
+            }
+
+            .toolbar-button:disabled,
+            .toolbar-button:disabled label,
+            .square-icon-button:disabled,
+            .square-icon-button:disabled label,
+            .square-icon-button:disabled image,
+            .theme-toggle-button:disabled,
+            .theme-toggle-button:disabled label,
+            .theme-toggle-button:disabled image {
+                background: {{palette.SectionMutedBackground}};
+                color: {{palette.SecondaryText}};
+                border-color: {{palette.ContentBorder}};
             }
 
             headerbar.topbar-shell button.titlebutton {
@@ -409,7 +491,11 @@ public sealed class LauncherGtkThemeService
                 background: {{palette.ActionButtonBackground}};
                 color: {{palette.PrimaryText}};
                 border: 1px solid {{palette.ActionBorder}};
-                padding: 8px 14px;
+                padding: 6px 10px;
+            }
+
+            .action-button-label {
+                color: inherit;
             }
 
             .action-button:hover,
@@ -417,10 +503,22 @@ public sealed class LauncherGtkThemeService
                 background: {{palette.ActionButtonHover}};
             }
 
+            .action-button:disabled,
+            .action-button:disabled label,
+            .popover-menu-button:disabled,
+            .popover-menu-button:disabled label,
+            .danger-button:disabled,
+            .danger-button:disabled label {
+                background: {{palette.SectionMutedBackground}};
+                color: {{palette.SecondaryText}};
+                border-color: {{palette.ContentBorder}};
+            }
+
             .primary-button {
                 background: {{palette.PrimaryButton}};
                 color: #ffffff;
                 border-color: {{palette.PrimaryButton}};
+                transition: all 0.15s ease-in-out;
             }
 
             .primary-button,
@@ -434,22 +532,29 @@ public sealed class LauncherGtkThemeService
             .primary-button:active image,
             .primary-button:checked,
             .primary-button:checked label,
-            .primary-button:checked image,
-            .primary-button:disabled,
-            .primary-button:disabled label,
-            .primary-button:disabled image {
+            .primary-button:checked image {
                 color: #ffffff;
             }
 
             .primary-button:hover,
-            .primary-button:active,
             .primary-button:checked {
                 background: {{palette.PrimaryButtonHover}};
             }
 
+            .primary-button:active {
+                background: shade({{palette.PrimaryButtonHover}}, 0.9);
+                box-shadow: inset 0 3px 5px rgba(0, 0, 0, 0.2);
+            }
+
             .primary-button:disabled {
-                background: shade({{palette.PrimaryButton}}, 0.88);
-                border-color: shade({{palette.PrimaryButton}}, 0.88);
+                background: {{palette.SectionMutedBackground}};
+                border-color: {{palette.ContentBorder}};
+                color: {{palette.SecondaryText}};
+            }
+
+            .primary-button:disabled label,
+            .primary-button:disabled image {
+                color: {{palette.SecondaryText}};
             }
 
             .danger-button {
@@ -495,7 +600,7 @@ public sealed class LauncherGtkThemeService
             .settings-java-list row,
             .accounts-list row {
                 padding: 0;
-                background: {{palette.RowBackground}};
+                background: {{palette.ContentBackground}};
                 border-bottom: 1px solid {{palette.ContentBorder}};
             }
 
@@ -558,7 +663,7 @@ public sealed class LauncherGtkThemeService
             }
 
             .empty-row {
-                background: {{palette.RowBackground}};
+                background: {{palette.ContentBackground}};
             }
 
             .settings-shell {
@@ -590,7 +695,7 @@ public sealed class LauncherGtkThemeService
             }
 
             .settings-nav-row-body {
-                min-height: 44px;
+                min-height: 38px;
             }
 
             .settings-content-shell {
@@ -604,7 +709,7 @@ public sealed class LauncherGtkThemeService
             .settings-card {
                 background: {{palette.SectionBackground}};
                 border: 1px solid {{palette.ContentBorder}};
-                padding: 16px;
+                padding: 10px;
             }
 
             .avatar-preview-frame {
@@ -616,7 +721,7 @@ public sealed class LauncherGtkThemeService
             .settings-card-muted {
                 background: {{palette.SectionMutedBackground}};
                 border: 1px solid {{palette.ContentBorder}};
-                padding: 16px;
+                padding: 10px;
             }
 
             .catalog-description-view,
@@ -634,6 +739,32 @@ public sealed class LauncherGtkThemeService
             .catalog-description-code-shell {
                 background: {{palette.ContentBackground}};
                 border: 1px solid {{palette.ContentBorder}};
+            }
+
+            .manual-download-list-scroller,
+            .manual-download-list-scroller viewport {
+                background: {{palette.SectionMutedBackground}};
+                border: 1px solid {{palette.ContentBorder}};
+            }
+
+            .manual-download-row-shell {
+                background: {{palette.SectionBackground}};
+                border: 1px dashed {{palette.ContentBorder}};
+            }
+
+            .manual-download-row-shell-resolved {
+                background: rgba(76, 201, 114, 0.16);
+                border-color: rgba(76, 201, 114, 0.55);
+            }
+
+            .manual-download-status,
+            .manual-download-row-status {
+                color: {{palette.SecondaryText}};
+            }
+
+            .manual-download-row-shell-resolved .manual-download-row-status,
+            .manual-download-link-button-resolved {
+                color: #2f9e44;
             }
 
             notebook {
@@ -697,7 +828,7 @@ public sealed class LauncherGtkThemeService
 
             .settings-row {
                 border-bottom: 1px solid {{palette.ContentBorder}};
-                padding: 10px 0;
+                padding: 7px 0;
             }
 
             .settings-footer {
@@ -745,11 +876,27 @@ public sealed class LauncherGtkThemeService
             }
 
             .add-instance-card {
-                padding: 14px;
+                padding: 10px;
             }
 
             .add-instance-pane {
                 background: transparent;
+            }
+
+            .add-instance-list-scroller,
+            .add-instance-list-scroller viewport {
+                background: {{palette.SectionMutedBackground}};
+                border: 1px solid {{palette.ContentBorder}};
+            }
+
+            .add-instance-version-list,
+            .add-instance-pack-list,
+            .add-instance-version-list viewport,
+            .add-instance-pack-list viewport,
+            .add-instance-version-list box,
+            .add-instance-pack-list box {
+                background: {{palette.SectionMutedBackground}};
+                color: {{palette.PrimaryText}};
             }
 
             .add-instance-icon-placeholder {
@@ -782,7 +929,7 @@ public sealed class LauncherGtkThemeService
 
             .add-instance-version-list row,
             .add-instance-pack-list row {
-                border-bottom: 1px solid {{palette.ContentBorder}};
+                border-bottom: 0;
             }
 
             .add-instance-version-row-even {
@@ -812,6 +959,19 @@ public sealed class LauncherGtkThemeService
 
             .add-instance-version-list row:selected,
             .add-instance-pack-list row:selected {
+                background: {{palette.Accent}};
+            }
+
+            .add-instance-version-list row:selected box,
+            .add-instance-version-list row:selected eventbox,
+            .add-instance-version-list row:selected .add-instance-version-cell,
+            .add-instance-version-list row:selected .add-instance-item-shell,
+            .add-instance-version-list row:selected .add-instance-version-row-even,
+            .add-instance-version-list row:selected .add-instance-version-row-odd,
+            .add-instance-pack-list row:selected box,
+            .add-instance-pack-list row:selected eventbox,
+            .add-instance-pack-list row:selected .add-instance-item-shell,
+            .add-instance-pack-list row:selected .add-instance-pack-row-body {
                 background: {{palette.Accent}};
             }
 
@@ -851,6 +1011,11 @@ public sealed class LauncherGtkThemeService
                 background: transparent;
             }
 
+            .add-instance-item-shell {
+                background: transparent;
+                border: 1px dashed {{palette.ContentBorder}};
+            }
+
             .add-instance-version-cell-divider {
                 border-right: 1px dashed {{palette.ContentBorder}};
             }
@@ -865,9 +1030,15 @@ public sealed class LauncherGtkThemeService
                 background: transparent;
             }
 
-            .add-instance-pack-icon-shell {
-                background: {{palette.SectionBackground}};
-                border: 1px solid {{palette.ContentBorder}};
+            .add-instance-pack-icon-cell {
+                border-right: 1px dashed {{palette.ContentBorder}};
+            }
+
+            .add-instance-pack-title {
+                color: {{palette.PrimaryText}};
+                font-family: {{LauncherFontBootstrapper.PreferredTitleFontFamily}};
+                font-weight: 600;
+                font-size: 13px;
             }
 
             .add-instance-pack-icon-placeholder {
@@ -876,17 +1047,150 @@ public sealed class LauncherGtkThemeService
                 font-weight: 600;
             }
 
-            .add-instance-pack-list row:selected .add-instance-pack-icon-shell {
-                border-color: rgba(255, 255, 255, 0.5);
-                background: rgba(255, 255, 255, 0.08);
+            .add-instance-pack-list row:selected .add-instance-pack-icon-cell {
+                border-right-color: rgba(255, 255, 255, 0.55);
             }
 
             .add-instance-pack-list row:selected .add-instance-pack-icon-placeholder {
                 color: #ffffff;
             }
 
-            .add-instance-pack-details {
+            .launcher-crash-scroller,
+            .launcher-crash-scroller viewport,
+            .launcher-crash-text,
+            .launcher-crash-text text {
+                background: {{palette.SectionMutedBackground}};
+                color: {{palette.PrimaryText}};
+                border: 1px solid {{palette.ContentBorder}};
+            }
+
+            .edit-instance-nav-shell {
+                border-right: 1px solid {{palette.SidebarBorder}};
+            }
+
+            .edit-instance-log-shell,
+            .edit-instance-log-shell viewport,
+            .edit-instance-log-view,
+            .edit-instance-log-view text {
+                background: {{palette.SectionMutedBackground}};
+                color: {{palette.PrimaryText}};
+                border: 1px solid {{palette.ContentBorder}};
+            }
+
+            .edit-instance-content-list {
                 background: transparent;
+            }
+
+            .edit-instance-sort-header,
+            .edit-instance-sort-header:hover,
+            .edit-instance-sort-header:active,
+            .edit-instance-sort-header:focus {
+                padding: 0;
+                min-height: 0;
+                min-width: 0;
+                border: 0;
+                border-radius: 0;
+                background: transparent;
+                background-image: none;
+                box-shadow: none;
+                color: {{palette.SecondaryText}};
+            }
+
+            .edit-instance-sort-header label {
+                color: {{palette.SecondaryText}};
+                font-weight: 600;
+            }
+
+            .edit-instance-actions-cell {
+                background: transparent;
+            }
+
+            .edit-instance-actions-sidebar {
+                background: {{palette.SectionBackground}};
+                min-width: 210px;
+            }
+
+            .edit-instance-actions-sidebar button {
+                margin-top: 2px;
+                margin-bottom: 2px;
+            }
+
+            .edit-instance-content-row {
+                background: {{palette.SectionBackground}};
+                border-bottom: 1px solid {{palette.ContentBorder}};
+            }
+
+            .edit-instance-content-row:hover {
+                background: {{palette.RowHover}};
+            }
+
+            .edit-instance-content-list row:selected button,
+            .edit-instance-content-list row:selected button label,
+            .edit-instance-content-list row:selected .edit-instance-source-badge,
+            .edit-instance-content-list row:selected .edit-instance-source-badge label {
+                color: #ffffff;
+                border-color: rgba(255, 255, 255, 0.45);
+            }
+
+            .edit-instance-content-list row:selected .action-button,
+            .edit-instance-content-list row:selected .danger-button,
+            .edit-instance-content-list row:selected .edit-instance-source-badge {
+                background: rgba(255, 255, 255, 0.14);
+            }
+
+            .edit-instance-content-list row:selected .settings-caption,
+            .edit-instance-content-list row:selected .catalog-installed-label {
+                color: rgba(255, 255, 255, 0.88);
+            }
+
+            .provider-inline-link,
+            .provider-inline-link:hover,
+            .provider-inline-link:active,
+            .provider-inline-link:focus {
+                padding: 0;
+                min-height: 0;
+                min-width: 0;
+                border: 0;
+                border-radius: 0;
+                background: transparent;
+                background-image: none;
+                box-shadow: none;
+            }
+
+            .provider-inline-link,
+            .provider-inline-link label {
+                color: {{palette.Accent}};
+            }
+
+            .catalog-browser-nav-shell {
+                min-width: 118px;
+            }
+
+            .catalog-browser-content-shell {
+                background: {{palette.ContentBackground}};
+            }
+
+            .catalog-browser-nav-shell .settings-nav-row-body {
+                min-height: 30px;
+            }
+
+            .catalog-installed-label {
+                color: {{palette.SecondaryText}};
+            }
+
+            .edit-instance-source-badge {
+                background: {{palette.ToolbarButtonBackground}};
+                color: {{palette.PrimaryText}};
+                border: 1px solid {{palette.ContentBorder}};
+                padding: 2px 6px;
+            }
+
+            .add-instance-pack-details {
+                background: {{palette.SectionBackground}};
+            }
+
+            .add-instance-loader-status {
+                color: {{palette.SecondaryText}};
             }
 
             .add-instance-footer {
@@ -895,11 +1199,11 @@ public sealed class LauncherGtkThemeService
             }
 
             .add-instance-footer-primary {
-                min-width: 96px;
+                min-width: 88px;
             }
 
             .add-instance-footer-secondary {
-                min-width: 96px;
+                min-width: 88px;
             }
             """;
     }

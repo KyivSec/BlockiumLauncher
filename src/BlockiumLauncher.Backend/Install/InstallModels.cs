@@ -1,6 +1,7 @@
 using BlockiumLauncher.Domain.Entities;
 using BlockiumLauncher.Domain.Enums;
 using BlockiumLauncher.Domain.ValueObjects;
+using BlockiumLauncher.Application.Abstractions.Storage;
 using BlockiumLauncher.Shared.Errors;
 
 namespace BlockiumLauncher.Application.UseCases.Install
@@ -67,6 +68,7 @@ namespace BlockiumLauncher.Application.UseCases.Install
         public string? TargetDirectory { get; init; }
         public bool OverwriteIfExists { get; init; }
         public bool DownloadRuntime { get; init; }
+        public IProgress<InstallPreparationProgress>? PreparationProgress { get; init; }
     }
 
     public sealed class InstallInstanceResult
@@ -74,6 +76,34 @@ namespace BlockiumLauncher.Application.UseCases.Install
         public LauncherInstance Instance { get; init; } = default!;
         public string InstalledPath { get; init; } = string.Empty;
     }
+
+    public sealed class PreparedInstallSession : IAsyncDisposable
+    {
+        public InstallPlan Plan { get; init; } = default!;
+        public ITempWorkspace Workspace { get; init; } = default!;
+        public string PreparedRootPath { get; init; } = string.Empty;
+
+        public ValueTask DisposeAsync()
+        {
+            return Workspace.DisposeAsync();
+        }
+    }
+
+    public enum InstallPreparationPhase
+    {
+        Preparing = 0,
+        DownloadingRuntime = 1,
+        DownloadingLibraries = 2,
+        DownloadingAssets = 3,
+        ApplyingLoaderProfile = 4
+    }
+
+    public sealed record InstallPreparationProgress(
+        InstallPreparationPhase Phase,
+        string Title,
+        string StatusText,
+        int? Current = null,
+        int? Total = null);
 
     public sealed class InstallPlan
     {

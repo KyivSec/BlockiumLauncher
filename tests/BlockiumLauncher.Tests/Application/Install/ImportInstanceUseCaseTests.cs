@@ -143,6 +143,7 @@ public sealed class ImportInstanceUseCaseTests
         public string GetDefaultInstanceDirectory(string instanceName) => Path.Combine(InstancesDirectory, instanceName);
         public string GetInstanceDataDirectory(string installLocation) => Path.Combine(installLocation, ".blockium");
         public string GetInstanceMetadataFilePath(string installLocation) => Path.Combine(GetInstanceDataDirectory(installLocation), "instance-metadata.json");
+        public string GetInstanceModpackMetadataFilePath(string installLocation) => Path.Combine(GetInstanceDataDirectory(installLocation), "modpack-metadata.json");
         public string GetContextLogFilePath(string context, DateTimeOffset? timestampUtc = null) => Path.Combine(LogsDirectory, $"{context}_{(timestampUtc ?? DateTimeOffset.UtcNow):yyyyMMdd}.log");
     }
 }

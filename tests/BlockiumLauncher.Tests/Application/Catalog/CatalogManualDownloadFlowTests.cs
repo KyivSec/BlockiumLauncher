@@ -1,3 +1,7 @@
+using System.Net;
+using System.Net.Http;
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 using BlockiumLauncher.Application.Abstractions.Instances;
 using BlockiumLauncher.Application.Abstractions.Paths;
@@ -7,10 +11,12 @@ using BlockiumLauncher.Application.Abstractions.Storage;
 using BlockiumLauncher.Application.UseCases.Catalog;
 using BlockiumLauncher.Application.UseCases.Common;
 using BlockiumLauncher.Application.UseCases.Install;
+using BlockiumLauncher.Backend.Catalog;
 using BlockiumLauncher.Domain.Entities;
 using BlockiumLauncher.Domain.Enums;
 using BlockiumLauncher.Domain.ValueObjects;
 using BlockiumLauncher.Infrastructure.Downloads;
+using BlockiumLauncher.Infrastructure.Metadata.Clients;
 using BlockiumLauncher.Infrastructure.Persistence.Paths;
 using BlockiumLauncher.Shared.Primitives;
 using BlockiumLauncher.Shared.Results;
@@ -21,7 +27,7 @@ namespace BlockiumLauncher.Application.Tests.Catalog;
 public sealed class CatalogManualDownloadFlowTests
 {
     [Fact]
-    public async Task ImportAndResumeModpackImport_CompletesWhenManualFilesAppearInDownloadsFolder()
+    public async Task ExecuteAsync_CompletesImportAfterBlockedFilesAreMatchedBeforeDownloadsStart()
     {
         var rootDirectory = Path.Combine(Path.GetTempPath(), "BlockiumLauncher.Tests", Path.GetRandomFileName());
         var downloadsDirectory = Path.Combine(rootDirectory, "Downloads");
@@ -34,22 +40,20 @@ public sealed class CatalogManualDownloadFlowTests
             var metadataService = new FakeInstanceContentMetadataService();
             var manualDownloadStateStore = new InMemoryManualDownloadStateStore();
             var tempWorkspaceFactory = new FakeTempWorkspaceFactory();
-
-            var installPlanBuilder = new InstallPlanBuilder(
-                new FakeVersionManifestService(),
-                new FakeLoaderMetadataService(),
-                launcherPaths);
+            var contentCatalog = new FakeContentCatalogFileService();
 
             var installUseCase = new InstallInstanceUseCase(
-                installPlanBuilder,
+                new InstallPlanBuilder(new FakeVersionManifestService(), new FakeLoaderMetadataService(), launcherPaths),
                 tempWorkspaceFactory,
                 new FakeInstanceContentInstaller(),
                 new FakeFileTransaction(),
                 repository,
                 metadataService);
 
+            var pipeline = CreatePipeline(contentCatalog, installUseCase, metadataService, manualDownloadStateStore);
             var importUseCase = new ImportCatalogModpackUseCase(
-                new FakeContentCatalogFileService(),
+                pipeline,
+                contentCatalog,
                 new FakeDownloader(),
                 tempWorkspaceFactory,
                 new FakeArchiveExtractor(),
@@ -58,45 +62,117 @@ public sealed class CatalogManualDownloadFlowTests
                 metadataService,
                 manualDownloadStateStore);
 
+            var promptWasShown = false;
             var importResult = await importUseCase.ExecuteAsync(new ImportCatalogModpackRequest
             {
                 Provider = CatalogProvider.CurseForge,
                 ProjectId = "9000",
                 FileId = "9001",
                 InstanceName = "Manual Pack",
-                DownloadsDirectory = downloadsDirectory
+                DownloadsDirectory = downloadsDirectory,
+                BlockedFilesPromptAsync = async (prompt, cancellationToken) =>
+                {
+                    promptWasShown = true;
+                    Assert.Equal(CatalogProvider.CurseForge, prompt.Provider);
+                    Assert.Equal(downloadsDirectory, prompt.DownloadsDirectory);
+
+                    var blockedFile = Assert.Single(prompt.Files);
+                    Assert.Equal("Manual Only", blockedFile.ProjectName);
+                    Assert.Equal("2003", blockedFile.FileId);
+                    Assert.Equal("2002", blockedFile.ManifestFileId);
+                    Assert.Equal("manual-only-1.20.1.jar", blockedFile.FileName);
+                    Assert.Equal("manual-only-1.20.4.jar", blockedFile.ManifestFileName);
+                    Assert.Equal("https://www.curseforge.com/minecraft/mc-mods/manual-only/files/2003", blockedFile.FilePageUrl);
+                    Assert.Equal("https://www.curseforge.com/minecraft/mc-mods/manual-only/download/2003/file", blockedFile.DirectDownloadUrl);
+
+                    await File.WriteAllBytesAsync(
+                        Path.Combine(downloadsDirectory, blockedFile.FileName),
+                        [1, 2, 3, 4],
+                        cancellationToken);
+
+                    return new BlockedModpackFilesPromptResult
+                    {
+                        Decision = BlockedModpackFilesDecision.Continue,
+                        Matches = PendingManualDownloadMatcher.FindMatches(prompt.DownloadsDirectory, prompt.Files)
+                    };
+                }
             });
 
             Assert.True(importResult.IsSuccess);
-            Assert.False(importResult.Value.IsCompleted);
+            Assert.True(promptWasShown);
+            Assert.True(importResult.Value.IsCompleted);
+            Assert.False(importResult.Value.WasManualDownloadStepSkipped);
+            Assert.Empty(importResult.Value.PendingManualDownloads);
             Assert.Equal(downloadsDirectory, importResult.Value.DownloadsDirectory);
-
-            var pendingFile = Assert.Single(importResult.Value.PendingManualDownloads);
-            Assert.Equal("manual-only.jar", pendingFile.FileName);
             Assert.True(File.Exists(Path.Combine(importResult.Value.InstalledPath, "mods", "auto-downloaded.jar")));
+            Assert.True(File.Exists(Path.Combine(importResult.Value.InstalledPath, "mods", "manual-only-1.20.1.jar")));
+            Assert.False(File.Exists(Path.Combine(importResult.Value.InstalledPath, "mods", "manual-only-1.20.4.jar")));
             Assert.True(File.Exists(Path.Combine(importResult.Value.InstalledPath, "config", "pack.txt")));
+            Assert.Contains("mods/manual-only-1.20.1.jar", metadataService.AppliedSources.Keys, StringComparer.OrdinalIgnoreCase);
+            Assert.Equal(
+                "https://www.curseforge.com/minecraft/mc-mods/manual-only/download/2003/file",
+                metadataService.AppliedSources["mods/manual-only-1.20.1.jar"].OriginalUrl);
+            Assert.Null(await manualDownloadStateStore.LoadAsync(importResult.Value.Instance.InstallLocation));
+        }
+        finally
+        {
+            if (Directory.Exists(rootDirectory))
+            {
+                Directory.Delete(rootDirectory, true);
+            }
+        }
+    }
 
-            await File.WriteAllBytesAsync(
-                Path.Combine(downloadsDirectory, pendingFile.FileName),
-                new byte[pendingFile.SizeBytes == 0 ? 4 : pendingFile.SizeBytes]);
+    [Fact]
+    public async Task ExecuteAsync_CancelInBlockedFilesPrompt_DoesNotSaveInstance()
+    {
+        var rootDirectory = Path.Combine(Path.GetTempPath(), "BlockiumLauncher.Tests", Path.GetRandomFileName());
+        var downloadsDirectory = Path.Combine(rootDirectory, "Downloads");
+        Directory.CreateDirectory(downloadsDirectory);
 
-            var resumeUseCase = new ResumeCatalogModpackImportUseCase(
+        try
+        {
+            var launcherPaths = new LauncherPaths(rootDirectory);
+            var repository = new InMemoryInstanceRepository();
+            var metadataService = new FakeInstanceContentMetadataService();
+            var manualDownloadStateStore = new InMemoryManualDownloadStateStore();
+            var tempWorkspaceFactory = new FakeTempWorkspaceFactory();
+            var contentCatalog = new FakeContentCatalogFileService();
+
+            var installUseCase = new InstallInstanceUseCase(
+                new InstallPlanBuilder(new FakeVersionManifestService(), new FakeLoaderMetadataService(), launcherPaths),
+                tempWorkspaceFactory,
+                new FakeInstanceContentInstaller(),
+                new FakeFileTransaction(),
                 repository,
-                importUseCase,
+                metadataService);
+
+            var pipeline = CreatePipeline(contentCatalog, installUseCase, metadataService, manualDownloadStateStore);
+            var importUseCase = new ImportCatalogModpackUseCase(
+                pipeline,
+                contentCatalog,
+                new FakeDownloader(),
+                tempWorkspaceFactory,
+                new FakeArchiveExtractor(),
+                installUseCase,
+                repository,
+                metadataService,
                 manualDownloadStateStore);
 
-            var resumeResult = await resumeUseCase.ExecuteAsync(new ResumeCatalogModpackImportRequest
+            await Assert.ThrowsAsync<OperationCanceledException>(() => importUseCase.ExecuteAsync(new ImportCatalogModpackRequest
             {
-                InstanceId = importResult.Value.Instance.InstanceId.ToString(),
-                DownloadsDirectory = downloadsDirectory
-            });
+                Provider = CatalogProvider.CurseForge,
+                ProjectId = "9000",
+                FileId = "9001",
+                InstanceName = "Cancelled Pack",
+                DownloadsDirectory = downloadsDirectory,
+                BlockedFilesPromptAsync = (_, _) => Task.FromResult(new BlockedModpackFilesPromptResult
+                {
+                    Decision = BlockedModpackFilesDecision.Cancel
+                })
+            }));
 
-            Assert.True(resumeResult.IsSuccess);
-            Assert.True(resumeResult.Value.IsCompleted);
-            Assert.Empty(resumeResult.Value.PendingManualDownloads);
-            Assert.True(File.Exists(Path.Combine(importResult.Value.InstalledPath, "mods", "manual-only.jar")));
-            Assert.Contains("mods/manual-only.jar", metadataService.AppliedSources.Keys, StringComparer.OrdinalIgnoreCase);
-            Assert.Null(await manualDownloadStateStore.LoadAsync(importResult.Value.Instance.InstallLocation));
+            Assert.Empty(await repository.ListAsync(CancellationToken.None));
         }
         finally
         {
@@ -112,6 +188,11 @@ public sealed class CatalogManualDownloadFlowTests
         public Task<Result<IReadOnlyList<CatalogFileSummary>>> GetFilesAsync(CatalogFileQuery query, CancellationToken cancellationToken = default)
         {
             throw new NotSupportedException();
+        }
+
+        public Task<Result<CatalogFileDetails>> GetFileDetailsAsync(CatalogFileDetailsQuery query, CancellationToken cancellationToken = default)
+        {
+            return Task.FromResult(Result<CatalogFileDetails>.Failure(new Shared.Errors.Error("Metadata.NotFound", "Not used in this test.")));
         }
 
         public Task<Result<CatalogFileSummary>> ResolveFileAsync(CatalogFileResolutionQuery query, CancellationToken cancellationToken = default)
@@ -130,37 +211,34 @@ public sealed class CatalogManualDownloadFlowTests
                 }));
             }
 
-            if (query.ProjectId == "1001")
+            if (query.ProjectId == "1002" &&
+                string.Equals(query.GameVersion, "1.20.1", StringComparison.OrdinalIgnoreCase))
             {
                 return Task.FromResult(Result<CatalogFileSummary>.Success(new CatalogFileSummary
                 {
                     Provider = CatalogProvider.CurseForge,
                     ContentType = CatalogContentType.Mod,
-                    ProjectId = "1001",
-                    FileId = "2001",
-                    DisplayName = "Auto Downloaded",
-                    FileName = "auto-downloaded.jar",
-                    DownloadUrl = "https://downloads.invalid/auto-downloaded.jar",
-                    SizeBytes = 4
+                    ProjectId = "1002",
+                    FileId = "2003",
+                    DisplayName = "Manual Only",
+                    FileName = "manual-only-1.20.1.jar",
+                    DownloadUrl = null,
+                    ProjectUrl = "https://www.curseforge.com/minecraft/mc-mods/manual-only",
+                    FilePageUrl = "https://www.curseforge.com/minecraft/mc-mods/manual-only/files/2003",
+                    Sha1 = TestSha1,
+                    SizeBytes = 4,
+                    PublishedAtUtc = DateTimeOffset.UtcNow,
+                    GameVersions = ["1.20.1", "Forge"],
+                    Loaders = ["forge"],
+                    RequiresManualDownload = true
                 }));
             }
 
-            return Task.FromResult(Result<CatalogFileSummary>.Success(new CatalogFileSummary
-            {
-                Provider = CatalogProvider.CurseForge,
-                ContentType = CatalogContentType.Mod,
-                ProjectId = "1002",
-                FileId = "2002",
-                DisplayName = "Manual Only",
-                FileName = "manual-only.jar",
-                DownloadUrl = null,
-                ProjectUrl = "https://www.curseforge.com/minecraft/mc-mods/manual-only",
-                FilePageUrl = "https://www.curseforge.com/minecraft/mc-mods/manual-only/files/2002",
-                SizeBytes = 4,
-                RequiresManualDownload = true
-            }));
+            throw new NotSupportedException($"Unexpected resolution query: {query.ProjectId} / {query.ContentType} / {query.GameVersion}");
         }
     }
+
+    private static string TestSha1 => Convert.ToHexString(SHA1.HashData([1, 2, 3, 4]));
 
     private sealed class FakeArchiveExtractor : IArchiveExtractor
     {
@@ -204,6 +282,35 @@ public sealed class CatalogManualDownloadFlowTests
             File.WriteAllBytes(Request.DestinationPath, [1, 2, 3, 4]);
             return Task.FromResult(Result<DownloadResult>.Success(new DownloadResult(Request.DestinationPath, 4)));
         }
+
+        public async Task<Result<DownloadBatchResult>> DownloadBatchAsync(
+            DownloadBatchRequest Request,
+            IProgress<DownloadBatchProgress>? Progress = null,
+            CancellationToken CancellationToken = default)
+        {
+            var results = new List<DownloadResult>();
+            long totalBytes = 0;
+
+            for (var index = 0; index < Request.Requests.Count; index++)
+            {
+                var result = await DownloadAsync(Request.Requests[index], CancellationToken);
+                if (result.IsFailure)
+                {
+                    return Result<DownloadBatchResult>.Failure(result.Error);
+                }
+
+                results.Add(result.Value);
+                totalBytes += result.Value.BytesWritten;
+                Progress?.Report(new DownloadBatchProgress(
+                    index + 1,
+                    Request.Requests.Count,
+                    totalBytes,
+                    totalBytes,
+                    Path.GetFileName(Request.Requests[index].DestinationPath)));
+            }
+
+            return Result<DownloadBatchResult>.Success(new DownloadBatchResult(results, totalBytes));
+        }
     }
 
     private sealed class FakeTempWorkspaceFactory : ITempWorkspaceFactory
@@ -244,7 +351,11 @@ public sealed class CatalogManualDownloadFlowTests
 
     private sealed class FakeInstanceContentInstaller : IInstanceContentInstaller
     {
-        public Task<Result<string>> PrepareAsync(InstallPlan Plan, ITempWorkspace Workspace, CancellationToken CancellationToken = default)
+        public Task<Result<string>> PrepareAsync(
+            InstallPlan Plan,
+            ITempWorkspace Workspace,
+            IProgress<InstallPreparationProgress>? Progress = null,
+            CancellationToken CancellationToken = default)
         {
             var stagedRoot = Workspace.GetPath("prepared");
             Directory.CreateDirectory(Path.Combine(stagedRoot, ".minecraft", "mods"));
@@ -398,6 +509,16 @@ public sealed class CatalogManualDownloadFlowTests
             return Task.FromResult(new InstanceContentMetadata());
         }
 
+        public Task<InstanceContentMetadata> SetContentEnabledAsync(LauncherInstance instance, InstanceContentCategory category, string contentReference, bool enabled, CancellationToken cancellationToken = default)
+        {
+            return Task.FromResult(new InstanceContentMetadata());
+        }
+
+        public Task<InstanceContentMetadata> DeleteContentAsync(LauncherInstance instance, InstanceContentCategory category, string contentReference, CancellationToken cancellationToken = default)
+        {
+            return Task.FromResult(new InstanceContentMetadata());
+        }
+
         public Task<InstanceContentMetadata> RecordLaunchAsync(LauncherInstance instance, DateTimeOffset startedAtUtc, DateTimeOffset exitedAtUtc, CancellationToken cancellationToken = default)
         {
             return Task.FromResult(new InstanceContentMetadata());
@@ -436,6 +557,112 @@ public sealed class CatalogManualDownloadFlowTests
             return Task.FromResult(Result<IReadOnlyList<LoaderVersionSummary>>.Success([
                 new LoaderVersionSummary(LoaderType.Forge, VersionId.Parse("1.20.1"), "47.3.12", true)
             ]));
+        }
+    }
+
+    private static CatalogModpackImportPipeline CreatePipeline(
+        IContentCatalogFileService contentCatalogFileService,
+        InstallInstanceUseCase installUseCase,
+        IInstanceContentMetadataService metadataService,
+        IManualDownloadStateStore manualDownloadStateStore)
+    {
+        var httpClient = new HttpClient(new TestHttpMessageHandler(request =>
+        {
+            if (request.Method == HttpMethod.Post &&
+                string.Equals(request.RequestUri?.AbsoluteUri, "https://api.curseforge.com/v1/mods/files", StringComparison.OrdinalIgnoreCase))
+            {
+                return CreateJsonResponse($$"""
+                {
+                  "data": [
+                    {
+                      "id": 2001,
+                      "modId": 1001,
+                      "displayName": "Auto Downloaded",
+                      "fileName": "auto-downloaded.jar",
+                      "downloadUrl": "https://downloads.invalid/auto-downloaded.jar",
+                      "fileDate": "2026-04-01T00:00:00Z",
+                      "fileLength": 4,
+                      "hashes": [
+                        { "algo": 1, "value": "{{TestSha1}}" }
+                      ],
+                      "gameVersions": ["1.20.1", "Forge"]
+                    },
+                    {
+                      "id": 2002,
+                      "modId": 1002,
+                      "displayName": "Manual Only",
+                      "fileName": "manual-only-1.20.4.jar",
+                      "downloadUrl": null,
+                      "fileDate": "2026-03-01T00:00:00Z",
+                      "fileLength": 4,
+                      "hashes": [
+                        { "algo": 1, "value": "{{TestSha1}}" }
+                      ],
+                      "gameVersions": ["1.20.4", "Forge"]
+                    }
+                  ]
+                }
+                """);
+            }
+
+            if (request.Method == HttpMethod.Post &&
+                string.Equals(request.RequestUri?.AbsoluteUri, "https://api.curseforge.com/v1/mods", StringComparison.OrdinalIgnoreCase))
+            {
+                return CreateJsonResponse("""
+                {
+                  "data": [
+                    {
+                      "id": 1001,
+                      "name": "Auto Downloaded",
+                      "links": { "websiteUrl": "https://www.curseforge.com/minecraft/mc-mods/auto-downloaded" }
+                    },
+                    {
+                      "id": 1002,
+                      "name": "Manual Only",
+                      "links": { "websiteUrl": "https://www.curseforge.com/minecraft/mc-mods/manual-only" }
+                    }
+                  ]
+                }
+                """);
+            }
+
+            throw new InvalidOperationException($"Unexpected CurseForge request: {request.Method} {request.RequestUri}");
+        }));
+
+        var curseForgeService = new CurseForgeContentCatalogService(httpClient, new CurseForgeOptions
+        {
+            ApiKey = "test-api-key"
+        });
+
+        return new CatalogModpackImportPipeline(
+            new CurseForgeModpackPreflightService(curseForgeService, contentCatalogFileService),
+            contentCatalogFileService,
+            new FakeDownloader(),
+            installUseCase,
+            metadataService,
+            manualDownloadStateStore);
+    }
+
+    private static HttpResponseMessage CreateJsonResponse(string json)
+    {
+        return new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent(json, Encoding.UTF8, "application/json")
+        };
+    }
+
+    private sealed class TestHttpMessageHandler : HttpMessageHandler
+    {
+        private readonly Func<HttpRequestMessage, HttpResponseMessage> handler;
+
+        public TestHttpMessageHandler(Func<HttpRequestMessage, HttpResponseMessage> handler)
+        {
+            this.handler = handler;
+        }
+
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            return Task.FromResult(handler(request));
         }
     }
 }

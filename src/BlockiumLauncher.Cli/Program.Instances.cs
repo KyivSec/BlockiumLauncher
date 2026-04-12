@@ -251,7 +251,12 @@ internal static partial class Program
             return CliExitCodes.OperationFailed;
         }
 
-        var javaResult = await javaRuntimeResolver.ResolveExecutablePathAsync(instance.GameVersion.ToString(), CancellationToken.None).ConfigureAwait(false);
+        var javaResult = await javaRuntimeResolver.ResolveExecutablePathAsync(
+            instance.GameVersion.ToString(),
+            instance.LoaderType,
+            instance.LaunchProfile.PreferredJavaMajor,
+            instance.LaunchProfile.SkipCompatibilityChecks,
+            CancellationToken.None).ConfigureAwait(false);
         if (javaResult.IsFailure)
         {
             WriteFailure(javaResult.Error.Code, javaResult.Error.Message, outputJson);

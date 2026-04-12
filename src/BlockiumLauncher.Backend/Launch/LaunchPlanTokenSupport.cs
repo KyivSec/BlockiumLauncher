@@ -47,7 +47,7 @@ internal static class LaunchPlanTokenSupport
             ["${classpath}"] = ClasspathText,
             ["${classpath_separator}"] = Path.PathSeparator.ToString(),
             ["${library_directory}"] = LibraryDirectory,
-            ["${user_properties}"] = "{}",
+            ["${user_properties}"] = string.IsNullOrWhiteSpace(Account.UserPropertiesJson) ? "{}" : Account.UserPropertiesJson,
             ["${clientid}"] = string.Empty,
             ["${auth_xuid}"] = string.Empty,
             ["${resolution_width}"] = string.Empty,

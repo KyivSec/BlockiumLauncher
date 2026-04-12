@@ -21,6 +21,7 @@ public sealed class QuiltInstallOrchestrator : IQuiltInstallOrchestrator
     public async Task<Result<string>> PrepareAsync(
         InstallPlan plan,
         ITempWorkspace workspace,
+        IProgress<InstallPreparationProgress>? progress = null,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(plan);
@@ -52,7 +53,11 @@ public sealed class QuiltInstallOrchestrator : IQuiltInstallOrchestrator
 
         try
         {
-            await PrepareQuiltRuntimeAsync(plan, workspace.RootPath, cancellationToken).ConfigureAwait(false);
+            progress?.Report(new InstallPreparationProgress(
+                InstallPreparationPhase.Preparing,
+                "Preparing instance runtime",
+                "Resolving the staged instance layout and Quilt runtime."));
+            await PrepareQuiltRuntimeAsync(plan, workspace.RootPath, progress, cancellationToken).ConfigureAwait(false);
             return Result<string>.Success(workspace.RootPath);
         }
         catch (Exception exception)
@@ -67,6 +72,7 @@ public sealed class QuiltInstallOrchestrator : IQuiltInstallOrchestrator
     private async Task PrepareQuiltRuntimeAsync(
         InstallPlan plan,
         string rootPath,
+        IProgress<InstallPreparationProgress>? progress,
         CancellationToken cancellationToken)
     {
         using var httpClient = new HttpClient();
@@ -80,6 +86,10 @@ public sealed class QuiltInstallOrchestrator : IQuiltInstallOrchestrator
 
         var profileJsonPath = Path.Combine(sharedLoaderDirectory, "quilt-profile.json");
         var profileUrl = $"https://meta.quiltmc.org/v3/versions/loader/{plan.GameVersion}/{plan.LoaderVersion}/profile/json";
+        progress?.Report(new InstallPreparationProgress(
+            InstallPreparationPhase.ApplyingLoaderProfile,
+            "Preparing loader runtime",
+            "Downloading the Quilt loader profile."));
         var profileJson = await httpClient.GetStringAsync(profileUrl, cancellationToken).ConfigureAwait(false);
         await File.WriteAllTextAsync(profileJsonPath, profileJson, cancellationToken).ConfigureAwait(false);
 
@@ -99,6 +109,10 @@ public sealed class QuiltInstallOrchestrator : IQuiltInstallOrchestrator
         if (profileRoot.TryGetProperty("libraries", out var librariesElement) &&
             librariesElement.ValueKind == JsonValueKind.Array)
         {
+            progress?.Report(new InstallPreparationProgress(
+                InstallPreparationPhase.DownloadingLibraries,
+                "Downloading libraries",
+                "Fetching Quilt runtime libraries."));
             foreach (var library in librariesElement.EnumerateArray())
             {
                 if (!library.TryGetProperty("name", out var nameElement) || nameElement.ValueKind != JsonValueKind.String)
@@ -153,6 +167,10 @@ public sealed class QuiltInstallOrchestrator : IQuiltInstallOrchestrator
         Directory.CreateDirectory(sharedVersionDirectory);
 
         var clientJarPath = SharedContentLayout.GetSharedClientJarPath(plan.GameVersion);
+        progress?.Report(new InstallPreparationProgress(
+            InstallPreparationPhase.DownloadingRuntime,
+            "Downloading runtime",
+            "Fetching the Minecraft runtime required by this instance."));
         await DownloadFileAsync(httpClient, clientJarUrl, clientJarPath, null, cancellationToken).ConfigureAwait(false);
         classpathEntries.Add(clientJarPath);
 
@@ -161,6 +179,10 @@ public sealed class QuiltInstallOrchestrator : IQuiltInstallOrchestrator
         if (versionRoot.TryGetProperty("libraries", out var minecraftLibrariesElement) &&
             minecraftLibrariesElement.ValueKind == JsonValueKind.Array)
         {
+            progress?.Report(new InstallPreparationProgress(
+                InstallPreparationPhase.DownloadingLibraries,
+                "Downloading libraries",
+                "Fetching the Minecraft libraries required by this instance."));
             foreach (var library in minecraftLibrariesElement.EnumerateArray())
             {
                 if (!library.TryGetProperty("downloads", out var downloadsElement) ||

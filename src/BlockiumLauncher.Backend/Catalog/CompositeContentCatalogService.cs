@@ -130,4 +130,19 @@ public sealed class CompositeContentCatalogFileService : IContentCatalogFileServ
 
         return provider.ResolveFileAsync(query, cancellationToken);
     }
+
+    public Task<Result<CatalogFileDetails>> GetFileDetailsAsync(
+        CatalogFileDetailsQuery query,
+        CancellationToken cancellationToken = default)
+    {
+        if (!providers.TryGetValue(query.Provider, out var provider))
+        {
+            return Task.FromResult(Result<CatalogFileDetails>.Failure(
+                new BlockiumLauncher.Shared.Errors.Error(
+                    "Catalog.ProviderNotSupported",
+                    $"The catalog provider '{query.Provider}' does not expose file details.")));
+        }
+
+        return provider.GetFileDetailsAsync(query, cancellationToken);
+    }
 }

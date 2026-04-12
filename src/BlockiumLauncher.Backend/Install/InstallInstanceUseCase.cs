@@ -1,8 +1,5 @@
-using System;
 using System.IO;
 using System.Linq;
-using System.Threading;
-using System.Threading.Tasks;
 using BlockiumLauncher.Application.Abstractions.Repositories;
 using BlockiumLauncher.Application.Abstractions.Services;
 using BlockiumLauncher.Application.Abstractions.Storage;
@@ -20,6 +17,7 @@ public sealed class InstallInstanceUseCase
     private readonly IFileTransaction FileTransaction;
     private readonly IInstanceRepository InstanceRepository;
     private readonly IInstanceContentMetadataService InstanceContentMetadataService;
+    private readonly ILauncherRuntimeSettingsRepository LauncherRuntimeSettingsRepository;
 
     public InstallInstanceUseCase(
         InstallPlanBuilder InstallPlanBuilder,
@@ -28,6 +26,25 @@ public sealed class InstallInstanceUseCase
         IFileTransaction FileTransaction,
         IInstanceRepository InstanceRepository,
         IInstanceContentMetadataService InstanceContentMetadataService)
+        : this(
+            InstallPlanBuilder,
+            TempWorkspaceFactory,
+            InstanceContentInstaller,
+            FileTransaction,
+            InstanceRepository,
+            InstanceContentMetadataService,
+            new DefaultLauncherRuntimeSettingsRepository())
+    {
+    }
+
+    public InstallInstanceUseCase(
+        InstallPlanBuilder InstallPlanBuilder,
+        ITempWorkspaceFactory TempWorkspaceFactory,
+        IInstanceContentInstaller InstanceContentInstaller,
+        IFileTransaction FileTransaction,
+        IInstanceRepository InstanceRepository,
+        IInstanceContentMetadataService InstanceContentMetadataService,
+        ILauncherRuntimeSettingsRepository LauncherRuntimeSettingsRepository)
     {
         this.InstallPlanBuilder = InstallPlanBuilder ?? throw new ArgumentNullException(nameof(InstallPlanBuilder));
         this.TempWorkspaceFactory = TempWorkspaceFactory ?? throw new ArgumentNullException(nameof(TempWorkspaceFactory));
@@ -35,101 +52,149 @@ public sealed class InstallInstanceUseCase
         this.FileTransaction = FileTransaction ?? throw new ArgumentNullException(nameof(FileTransaction));
         this.InstanceRepository = InstanceRepository ?? throw new ArgumentNullException(nameof(InstanceRepository));
         this.InstanceContentMetadataService = InstanceContentMetadataService ?? throw new ArgumentNullException(nameof(InstanceContentMetadataService));
+        this.LauncherRuntimeSettingsRepository = LauncherRuntimeSettingsRepository ?? throw new ArgumentNullException(nameof(LauncherRuntimeSettingsRepository));
     }
 
     public async Task<Result<InstallInstanceResult>> ExecuteAsync(
         InstallInstanceRequest Request,
         CancellationToken CancellationToken = default)
     {
-        ITempWorkspace? Workspace = null;
-        var TransactionStarted = false;
+        var preparedResult = await PrepareAsync(Request, CancellationToken).ConfigureAwait(false);
+        if (preparedResult.IsFailure)
+        {
+            return Result<InstallInstanceResult>.Failure(preparedResult.Error);
+        }
+
+        await using var preparedSession = preparedResult.Value;
+        return await CommitAsync(preparedSession, CancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task<Result<PreparedInstallSession>> PrepareAsync(
+        InstallInstanceRequest Request,
+        CancellationToken CancellationToken = default)
+    {
+        ITempWorkspace? workspace = null;
 
         try
         {
             await PruneStaleInstancesAsync(CancellationToken).ConfigureAwait(false);
 
-            var RequestedName = Request.InstanceName.Trim();
-            var FinalName = Request.OverwriteIfExists
-                ? RequestedName
-                : await ResolveAvailableInstanceNameAsync(RequestedName, CancellationToken).ConfigureAwait(false);
+            var requestedName = Request.InstanceName.Trim();
+            var finalName = Request.OverwriteIfExists
+                ? requestedName
+                : await ResolveAvailableInstanceNameAsync(requestedName, CancellationToken).ConfigureAwait(false);
 
-            var EffectiveRequest = CloneWithResolvedName(Request, FinalName);
+            var effectiveRequest = CloneWithResolvedName(Request, finalName);
 
-            var PlanResult = await InstallPlanBuilder.BuildAsync(EffectiveRequest, CancellationToken).ConfigureAwait(false);
-            if (PlanResult.IsFailure)
+            var planResult = await InstallPlanBuilder.BuildAsync(effectiveRequest, CancellationToken).ConfigureAwait(false);
+            if (planResult.IsFailure)
             {
-                return Result<InstallInstanceResult>.Failure(PlanResult.Error);
+                return Result<PreparedInstallSession>.Failure(planResult.Error);
             }
 
-            var ExistingInstance = await InstanceRepository.GetByNameAsync(FinalName, CancellationToken).ConfigureAwait(false);
-            if (ExistingInstance is not null && !EffectiveRequest.OverwriteIfExists)
+            var existingInstance = await InstanceRepository.GetByNameAsync(finalName, CancellationToken).ConfigureAwait(false);
+            if (existingInstance is not null && !effectiveRequest.OverwriteIfExists)
             {
-                return Result<InstallInstanceResult>.Failure(InstallErrors.InstanceAlreadyExists);
+                return Result<PreparedInstallSession>.Failure(InstallErrors.InstanceAlreadyExists);
             }
 
-            var Plan = PlanResult.Value;
-            if (Directory.Exists(Plan.TargetDirectory) && !EffectiveRequest.OverwriteIfExists)
+            var plan = planResult.Value;
+            if (Directory.Exists(plan.TargetDirectory) && !effectiveRequest.OverwriteIfExists)
             {
-                return Result<InstallInstanceResult>.Failure(InstallErrors.InstanceAlreadyExists);
+                return Result<PreparedInstallSession>.Failure(InstallErrors.InstanceAlreadyExists);
             }
 
-            Workspace = await TempWorkspaceFactory.CreateAsync("install", CancellationToken).ConfigureAwait(false);
+            workspace = await TempWorkspaceFactory.CreateAsync("install", CancellationToken).ConfigureAwait(false);
 
-            var PreparedResult = await InstanceContentInstaller.PrepareAsync(Plan, Workspace, CancellationToken).ConfigureAwait(false);
-            if (PreparedResult.IsFailure)
+            var preparedResult = await InstanceContentInstaller
+                .PrepareAsync(plan, workspace, Request.PreparationProgress, CancellationToken)
+                .ConfigureAwait(false);
+            if (preparedResult.IsFailure)
             {
-                return Result<InstallInstanceResult>.Failure(PreparedResult.Error);
+                await workspace.DisposeAsync().ConfigureAwait(false);
+                return Result<PreparedInstallSession>.Failure(preparedResult.Error);
             }
 
-            var BeginResult = await FileTransaction.BeginAsync(Plan.TargetDirectory, CancellationToken).ConfigureAwait(false);
-            if (BeginResult.IsFailure)
+            return Result<PreparedInstallSession>.Success(new PreparedInstallSession
             {
-                return Result<InstallInstanceResult>.Failure(BeginResult.Error);
-            }
-
-            TransactionStarted = true;
-
-            var StageResult = await FileTransaction.StageDirectoryAsync(PreparedResult.Value, CancellationToken).ConfigureAwait(false);
-            if (StageResult.IsFailure)
-            {
-                await FileTransaction.RollbackAsync(CancellationToken).ConfigureAwait(false);
-                return Result<InstallInstanceResult>.Failure(StageResult.Error);
-            }
-
-            var CommitResult = await FileTransaction.CommitAsync(CancellationToken).ConfigureAwait(false);
-            if (CommitResult.IsFailure)
-            {
-                await FileTransaction.RollbackAsync(CancellationToken).ConfigureAwait(false);
-                return Result<InstallInstanceResult>.Failure(CommitResult.Error);
-            }
-
-            var GameVersionId = CreateVersionId(Plan.GameVersion);
-            VersionId? LoaderVersionId = string.IsNullOrWhiteSpace(Plan.LoaderVersion) ? null : CreateVersionId(Plan.LoaderVersion);
-
-            var Instance = LauncherInstance.Create(
-                InstanceId.New(),
-                FinalName,
-                GameVersionId,
-                Plan.LoaderType,
-                LoaderVersionId,
-                Plan.TargetDirectory,
-                DateTimeOffset.UtcNow,
-                LaunchProfile.CreateDefault(),
-                null);
-
-            await InstanceRepository.SaveAsync(Instance, CancellationToken).ConfigureAwait(false);
-            await InstanceContentMetadataService.ReindexAsync(Instance, CancellationToken).ConfigureAwait(false);
-            CleanupRedundantInstallArtifacts(Plan.TargetDirectory);
-
-            return Result<InstallInstanceResult>.Success(new InstallInstanceResult
-            {
-                Instance = Instance,
-                InstalledPath = Plan.TargetDirectory
+                Plan = plan,
+                Workspace = workspace,
+                PreparedRootPath = preparedResult.Value
             });
         }
         catch
         {
-            if (TransactionStarted)
+            if (workspace is not null)
+            {
+                await workspace.DisposeAsync().ConfigureAwait(false);
+            }
+
+            return Result<PreparedInstallSession>.Failure(InstallErrors.Unexpected);
+        }
+    }
+
+    public async Task<Result<InstallInstanceResult>> CommitAsync(
+        PreparedInstallSession Session,
+        CancellationToken CancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(Session);
+
+        var transactionStarted = false;
+
+        try
+        {
+            var beginResult = await FileTransaction.BeginAsync(Session.Plan.TargetDirectory, CancellationToken).ConfigureAwait(false);
+            if (beginResult.IsFailure)
+            {
+                return Result<InstallInstanceResult>.Failure(beginResult.Error);
+            }
+
+            transactionStarted = true;
+
+            var stageResult = await FileTransaction.StageDirectoryAsync(Session.PreparedRootPath, CancellationToken).ConfigureAwait(false);
+            if (stageResult.IsFailure)
+            {
+                await FileTransaction.RollbackAsync(CancellationToken).ConfigureAwait(false);
+                return Result<InstallInstanceResult>.Failure(stageResult.Error);
+            }
+
+            var commitResult = await FileTransaction.CommitAsync(CancellationToken).ConfigureAwait(false);
+            if (commitResult.IsFailure)
+            {
+                await FileTransaction.RollbackAsync(CancellationToken).ConfigureAwait(false);
+                return Result<InstallInstanceResult>.Failure(commitResult.Error);
+            }
+
+            var gameVersionId = CreateVersionId(Session.Plan.GameVersion);
+            VersionId? loaderVersionId = string.IsNullOrWhiteSpace(Session.Plan.LoaderVersion)
+                ? null
+                : CreateVersionId(Session.Plan.LoaderVersion);
+
+            var runtimeSettings = await LauncherRuntimeSettingsRepository.LoadAsync(CancellationToken).ConfigureAwait(false);
+            var instance = LauncherInstance.Create(
+                InstanceId.New(),
+                Session.Plan.InstanceName,
+                gameVersionId,
+                Session.Plan.LoaderType,
+                loaderVersionId,
+                Session.Plan.TargetDirectory,
+                DateTimeOffset.UtcNow,
+                LaunchProfile.CreateDefault(runtimeSettings.DefaultMinMemoryMb, runtimeSettings.DefaultMaxMemoryMb),
+                null);
+
+            await InstanceRepository.SaveAsync(instance, CancellationToken).ConfigureAwait(false);
+            await InstanceContentMetadataService.ReindexAsync(instance, CancellationToken).ConfigureAwait(false);
+            CleanupRedundantInstallArtifacts(Session.Plan.TargetDirectory);
+
+            return Result<InstallInstanceResult>.Success(new InstallInstanceResult
+            {
+                Instance = instance,
+                InstalledPath = Session.Plan.TargetDirectory
+            });
+        }
+        catch
+        {
+            if (transactionStarted)
             {
                 await FileTransaction.RollbackAsync(CancellationToken).ConfigureAwait(false);
             }
@@ -138,37 +203,32 @@ public sealed class InstallInstanceUseCase
         }
         finally
         {
-            if (Workspace is not null)
-            {
-                await Workspace.DisposeAsync().ConfigureAwait(false);
-            }
-
             await FileTransaction.DisposeAsync().ConfigureAwait(false);
         }
     }
 
     private async Task PruneStaleInstancesAsync(CancellationToken CancellationToken)
     {
-        var Instances = await InstanceRepository.ListAsync(CancellationToken).ConfigureAwait(false);
+        var instances = await InstanceRepository.ListAsync(CancellationToken).ConfigureAwait(false);
 
-        foreach (var Instance in Instances)
+        foreach (var instance in instances)
         {
-            if (!string.IsNullOrWhiteSpace(Instance.InstallLocation) && !Directory.Exists(Instance.InstallLocation))
+            if (!string.IsNullOrWhiteSpace(instance.InstallLocation) && !Directory.Exists(instance.InstallLocation))
             {
-                await InstanceRepository.DeleteAsync(Instance.InstanceId, CancellationToken).ConfigureAwait(false);
+                await InstanceRepository.DeleteAsync(instance.InstanceId, CancellationToken).ConfigureAwait(false);
             }
         }
     }
 
     private async Task<string> ResolveAvailableInstanceNameAsync(string baseName, CancellationToken CancellationToken)
     {
-        var Instances = await InstanceRepository.ListAsync(CancellationToken).ConfigureAwait(false);
-        var UsedNames = Instances
+        var instances = await InstanceRepository.ListAsync(CancellationToken).ConfigureAwait(false);
+        var usedNames = instances
             .Select(static instance => instance.Name?.Trim())
             .Where(static name => !string.IsNullOrWhiteSpace(name))
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
 
-        if (!UsedNames.Contains(baseName))
+        if (!usedNames.Contains(baseName))
         {
             return baseName;
         }
@@ -176,7 +236,7 @@ public sealed class InstallInstanceUseCase
         for (var index = 1; index < int.MaxValue; index++)
         {
             var candidate = $"{baseName} ({index})";
-            if (!UsedNames.Contains(candidate))
+            if (!usedNames.Contains(candidate))
             {
                 return candidate;
             }
@@ -195,10 +255,10 @@ public sealed class InstallInstanceUseCase
             LoaderVersion = Request.LoaderVersion,
             TargetDirectory = Request.TargetDirectory,
             OverwriteIfExists = Request.OverwriteIfExists,
-            DownloadRuntime = Request.DownloadRuntime
+            DownloadRuntime = Request.DownloadRuntime,
+            PreparationProgress = Request.PreparationProgress
         };
     }
-
 
     private static void CleanupRedundantInstallArtifacts(string targetDirectory)
     {
@@ -232,8 +292,18 @@ public sealed class InstallInstanceUseCase
 
         Directory.Delete(path, recursive: false);
     }
+
     private static VersionId CreateVersionId(string Value)
     {
         return VersionId.Parse(Value);
+    }
+
+    private sealed class DefaultLauncherRuntimeSettingsRepository : ILauncherRuntimeSettingsRepository
+    {
+        public Task<LauncherRuntimeSettings> LoadAsync(CancellationToken CancellationToken = default)
+            => Task.FromResult(LauncherRuntimeSettings.CreateDefault());
+
+        public Task SaveAsync(LauncherRuntimeSettings Settings, CancellationToken CancellationToken = default)
+            => Task.CompletedTask;
     }
 }

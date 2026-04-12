@@ -134,6 +134,21 @@ namespace BlockiumLauncher.Application.UseCases.Instances
         public string ModReference { get; init; } = string.Empty;
         public bool Enabled { get; init; }
     }
+
+    public sealed class SetInstanceContentEnabledRequest
+    {
+        public InstanceId InstanceId { get; init; }
+        public InstanceContentCategory Category { get; init; }
+        public string ContentReference { get; init; } = string.Empty;
+        public bool Enabled { get; init; }
+    }
+
+    public sealed class DeleteInstanceContentRequest
+    {
+        public InstanceId InstanceId { get; init; }
+        public InstanceContentCategory Category { get; init; }
+        public string ContentReference { get; init; } = string.Empty;
+    }
 }
 
 namespace BlockiumLauncher.Application.UseCases.Instances
@@ -190,12 +205,15 @@ namespace BlockiumLauncher.Application.UseCases.Instances
 
         private static string? ResolveIconPath(LauncherInstance instance, InstanceContentMetadata? metadata)
         {
-            if (!string.IsNullOrWhiteSpace(metadata?.IconPath))
+            if (!string.IsNullOrWhiteSpace(metadata?.IconPath) &&
+                File.Exists(metadata.IconPath))
             {
                 return metadata.IconPath;
             }
 
-            return string.IsNullOrWhiteSpace(instance.IconKey) ? null : instance.IconKey;
+            return !string.IsNullOrWhiteSpace(instance.IconKey) && File.Exists(instance.IconKey)
+                ? instance.IconKey
+                : null;
         }
     }
 
@@ -302,6 +320,96 @@ namespace BlockiumLauncher.Application.UseCases.Instances
             {
                 var metadata = await instanceContentMetadataService
                     .SetModEnabledAsync(instance, request.ModReference, request.Enabled, cancellationToken)
+                    .ConfigureAwait(false);
+
+                return Result<InstanceContentMetadata>.Success(metadata);
+            }
+            catch (FileNotFoundException)
+            {
+                return Result<InstanceContentMetadata>.Failure(InstanceContentErrors.ContentNotFound);
+            }
+        }
+    }
+
+    public sealed class SetInstanceContentEnabledUseCase
+    {
+        private readonly IInstanceRepository instanceRepository;
+        private readonly IInstanceContentMetadataService instanceContentMetadataService;
+
+        public SetInstanceContentEnabledUseCase(
+            IInstanceRepository instanceRepository,
+            IInstanceContentMetadataService instanceContentMetadataService)
+        {
+            this.instanceRepository = instanceRepository ?? throw new ArgumentNullException(nameof(instanceRepository));
+            this.instanceContentMetadataService = instanceContentMetadataService ?? throw new ArgumentNullException(nameof(instanceContentMetadataService));
+        }
+
+        public async Task<Result<InstanceContentMetadata>> ExecuteAsync(
+            SetInstanceContentEnabledRequest request,
+            CancellationToken cancellationToken = default)
+        {
+            if (request is null ||
+                request.InstanceId == default ||
+                string.IsNullOrWhiteSpace(request.ContentReference))
+            {
+                return Result<InstanceContentMetadata>.Failure(InstanceContentErrors.InvalidRequest);
+            }
+
+            var instance = await instanceRepository.GetByIdAsync(request.InstanceId, cancellationToken).ConfigureAwait(false);
+            if (instance is null)
+            {
+                return Result<InstanceContentMetadata>.Failure(InstanceContentErrors.InstanceNotFound);
+            }
+
+            try
+            {
+                var metadata = await instanceContentMetadataService
+                    .SetContentEnabledAsync(instance, request.Category, request.ContentReference, request.Enabled, cancellationToken)
+                    .ConfigureAwait(false);
+
+                return Result<InstanceContentMetadata>.Success(metadata);
+            }
+            catch (FileNotFoundException)
+            {
+                return Result<InstanceContentMetadata>.Failure(InstanceContentErrors.ContentNotFound);
+            }
+        }
+    }
+
+    public sealed class DeleteInstanceContentUseCase
+    {
+        private readonly IInstanceRepository instanceRepository;
+        private readonly IInstanceContentMetadataService instanceContentMetadataService;
+
+        public DeleteInstanceContentUseCase(
+            IInstanceRepository instanceRepository,
+            IInstanceContentMetadataService instanceContentMetadataService)
+        {
+            this.instanceRepository = instanceRepository ?? throw new ArgumentNullException(nameof(instanceRepository));
+            this.instanceContentMetadataService = instanceContentMetadataService ?? throw new ArgumentNullException(nameof(instanceContentMetadataService));
+        }
+
+        public async Task<Result<InstanceContentMetadata>> ExecuteAsync(
+            DeleteInstanceContentRequest request,
+            CancellationToken cancellationToken = default)
+        {
+            if (request is null ||
+                request.InstanceId == default ||
+                string.IsNullOrWhiteSpace(request.ContentReference))
+            {
+                return Result<InstanceContentMetadata>.Failure(InstanceContentErrors.InvalidRequest);
+            }
+
+            var instance = await instanceRepository.GetByIdAsync(request.InstanceId, cancellationToken).ConfigureAwait(false);
+            if (instance is null)
+            {
+                return Result<InstanceContentMetadata>.Failure(InstanceContentErrors.InstanceNotFound);
+            }
+
+            try
+            {
+                var metadata = await instanceContentMetadataService
+                    .DeleteContentAsync(instance, request.Category, request.ContentReference, cancellationToken)
                     .ConfigureAwait(false);
 
                 return Result<InstanceContentMetadata>.Success(metadata);

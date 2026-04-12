@@ -41,6 +41,7 @@ namespace BlockiumLauncher.Application.Abstractions.Paths
         string GetDefaultInstanceDirectory(string instanceName);
         string GetInstanceDataDirectory(string installLocation);
         string GetInstanceMetadataFilePath(string installLocation);
+        string GetInstanceModpackMetadataFilePath(string installLocation);
         string GetContextLogFilePath(string context, DateTimeOffset? timestampUtc = null);
     }
 }

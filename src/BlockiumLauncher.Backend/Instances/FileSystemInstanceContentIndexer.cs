@@ -79,6 +79,7 @@ public sealed class FileSystemInstanceContentIndexer : IInstanceContentIndexer
                     SizeBytes = fileInfo.Length,
                     LastModifiedAtUtc = fileInfo.Exists ? fileInfo.LastWriteTimeUtc : null,
                     IsDisabled = fileInfo.Name.EndsWith(".disabled", StringComparison.OrdinalIgnoreCase),
+                    IconUrl = existingSources.TryGetValue(relativePath, out var sourceMetadata) ? sourceMetadata.IconUrl : null,
                     Source = existingSources.TryGetValue(relativePath, out var source) ? source : null
                 });
             }
@@ -110,6 +111,7 @@ public sealed class FileSystemInstanceContentIndexer : IInstanceContentIndexer
                     AbsolutePath = directoryInfo.FullName,
                     SizeBytes = 0,
                     LastModifiedAtUtc = directoryInfo.Exists ? directoryInfo.LastWriteTimeUtc : null,
+                    IconUrl = existingSources.TryGetValue(relativePath, out var sourceMetadata) ? sourceMetadata.IconUrl : null,
                     Source = existingSources.TryGetValue(relativePath, out var source) ? source : null
                 });
             }

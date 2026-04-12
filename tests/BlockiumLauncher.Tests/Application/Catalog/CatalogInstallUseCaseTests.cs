@@ -101,6 +101,11 @@ public sealed class CatalogInstallUseCaseTests
             throw new NotSupportedException();
         }
 
+        public Task<Result<CatalogFileDetails>> GetFileDetailsAsync(CatalogFileDetailsQuery query, CancellationToken cancellationToken = default)
+        {
+            return Task.FromResult(Result<CatalogFileDetails>.Failure(new Shared.Errors.Error("Metadata.NotFound", "Not used in this test.")));
+        }
+
         public Task<Result<CatalogFileSummary>> ResolveFileAsync(CatalogFileResolutionQuery query, CancellationToken cancellationToken = default)
         {
             return Task.FromResult(Result<CatalogFileSummary>.Success(new CatalogFileSummary
@@ -129,6 +134,35 @@ public sealed class CatalogInstallUseCaseTests
 
             File.WriteAllText(Request.DestinationPath, "jar-bytes");
             return Task.FromResult(Result<DownloadResult>.Success(new DownloadResult(Request.DestinationPath, 9)));
+        }
+
+        public async Task<Result<DownloadBatchResult>> DownloadBatchAsync(
+            DownloadBatchRequest Request,
+            IProgress<DownloadBatchProgress>? Progress = null,
+            CancellationToken CancellationToken = default)
+        {
+            var results = new List<DownloadResult>();
+            long totalBytes = 0;
+
+            for (var index = 0; index < Request.Requests.Count; index++)
+            {
+                var result = await DownloadAsync(Request.Requests[index], CancellationToken);
+                if (result.IsFailure)
+                {
+                    return Result<DownloadBatchResult>.Failure(result.Error);
+                }
+
+                results.Add(result.Value);
+                totalBytes += result.Value.BytesWritten;
+                Progress?.Report(new DownloadBatchProgress(
+                    index + 1,
+                    Request.Requests.Count,
+                    totalBytes,
+                    totalBytes,
+                    Path.GetFileName(Request.Requests[index].DestinationPath)));
+            }
+
+            return Result<DownloadBatchResult>.Success(new DownloadBatchResult(results, totalBytes));
         }
     }
 
@@ -177,6 +211,12 @@ public sealed class CatalogInstallUseCaseTests
             => Task.FromResult(new InstanceContentMetadata());
 
         public Task<InstanceContentMetadata> SetModEnabledAsync(LauncherInstance instance, string modReference, bool enabled, CancellationToken cancellationToken = default)
+            => Task.FromResult(new InstanceContentMetadata());
+
+        public Task<InstanceContentMetadata> SetContentEnabledAsync(LauncherInstance instance, InstanceContentCategory category, string contentReference, bool enabled, CancellationToken cancellationToken = default)
+            => Task.FromResult(new InstanceContentMetadata());
+
+        public Task<InstanceContentMetadata> DeleteContentAsync(LauncherInstance instance, InstanceContentCategory category, string contentReference, CancellationToken cancellationToken = default)
             => Task.FromResult(new InstanceContentMetadata());
 
         public Task<InstanceContentMetadata> RecordLaunchAsync(LauncherInstance instance, DateTimeOffset startedAtUtc, DateTimeOffset exitedAtUtc, CancellationToken cancellationToken = default)

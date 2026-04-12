@@ -9,6 +9,7 @@ public interface IFabricInstallOrchestrator
     Task<Result<string>> PrepareAsync(
         InstallPlan plan,
         ITempWorkspace workspace,
+        IProgress<InstallPreparationProgress>? progress = null,
         CancellationToken cancellationToken = default);
 }
 
@@ -17,6 +18,7 @@ public interface IForgeInstallOrchestrator
     Task<Result<string>> PrepareAsync(
         InstallPlan plan,
         ITempWorkspace workspace,
+        IProgress<InstallPreparationProgress>? progress = null,
         CancellationToken cancellationToken = default);
 }
 
@@ -25,6 +27,7 @@ public interface INeoForgeInstallOrchestrator
     Task<Result<string>> PrepareAsync(
         InstallPlan plan,
         ITempWorkspace workspace,
+        IProgress<InstallPreparationProgress>? progress = null,
         CancellationToken cancellationToken = default);
 }
 
@@ -33,5 +36,6 @@ public interface IQuiltInstallOrchestrator
     Task<Result<string>> PrepareAsync(
         InstallPlan plan,
         ITempWorkspace workspace,
+        IProgress<InstallPreparationProgress>? progress = null,
         CancellationToken cancellationToken = default);
 }

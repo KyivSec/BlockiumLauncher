@@ -81,7 +81,11 @@ public sealed class InstallInstanceUseCaseTests
 
     private sealed class FakeInstanceContentInstaller : IInstanceContentInstaller
     {
-        public Task<Result<string>> PrepareAsync(InstallPlan Plan, ITempWorkspace Workspace, CancellationToken CancellationToken = default)
+        public Task<Result<string>> PrepareAsync(
+            InstallPlan Plan,
+            ITempWorkspace Workspace,
+            IProgress<InstallPreparationProgress>? Progress = null,
+            CancellationToken CancellationToken = default)
         {
             var Root = Workspace.GetPath("prepared");
             Directory.CreateDirectory(Root);
@@ -194,6 +198,7 @@ public sealed class InstallInstanceUseCaseTests
         public string GetDefaultInstanceDirectory(string instanceName) => Path.Combine(InstancesDirectory, instanceName);
         public string GetInstanceDataDirectory(string installLocation) => Path.Combine(installLocation, ".blockium");
         public string GetInstanceMetadataFilePath(string installLocation) => Path.Combine(GetInstanceDataDirectory(installLocation), "instance-metadata.json");
+        public string GetInstanceModpackMetadataFilePath(string installLocation) => Path.Combine(GetInstanceDataDirectory(installLocation), "modpack-metadata.json");
         public string GetContextLogFilePath(string context, DateTimeOffset? timestampUtc = null) => Path.Combine(LogsDirectory, $"{context}_{(timestampUtc ?? DateTimeOffset.UtcNow):yyyyMMdd}.log");
     }
 

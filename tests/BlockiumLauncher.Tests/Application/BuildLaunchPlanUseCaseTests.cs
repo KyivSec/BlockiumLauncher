@@ -1,12 +1,16 @@
 using BlockiumLauncher.Application.Abstractions.Repositories;
 using BlockiumLauncher.Application.Abstractions.Services;
+using BlockiumLauncher.Application.Diagnostics;
 using BlockiumLauncher.Application.UseCases.Accounts;
 using BlockiumLauncher.Application.UseCases.Common;
 using BlockiumLauncher.Application.UseCases.Launch;
+using BlockiumLauncher.Application.UseCases.Skins;
 using BlockiumLauncher.Domain.Entities;
 using BlockiumLauncher.Domain.Enums;
 using BlockiumLauncher.Domain.ValueObjects;
 using BlockiumLauncher.Shared.Results;
+using System.Text;
+using System.Text.Json;
 using Xunit;
 
 namespace BlockiumLauncher.Application.Tests.Launch;
@@ -331,17 +335,115 @@ public sealed class BuildLaunchPlanUseCaseTests
         }
     }
 
+    [Fact]
+    public async Task ExecuteAsync_EmitsSkinAndCapeUserProperties_WhenAccountAppearanceExists()
+    {
+        var workingDirectory = CreateDirectory();
+        var javaExecutablePath = CreateJavaFile();
+        var classpathFile = CreateClasspathFile();
+        var assetsDirectory = CreateDirectory();
+        var skinPath = Path.Combine(CreateDirectory(), "selected-skin.png");
+        var capePath = Path.Combine(CreateDirectory(), "selected-cape.png");
+        File.WriteAllBytes(skinPath, [1, 2, 3, 4]);
+        File.WriteAllBytes(capePath, [5, 6, 7, 8]);
+
+        try
+        {
+            var account = LauncherAccount.CreateOffline(new AccountId("offline-1"), "Builder", null, true);
+            var instance = CreateInstalledInstance(workingDirectory, LoaderType.Vanilla, null);
+            var accountRepository = new FakeAccountRepository(account);
+            var resolveAccountUseCase = new ResolveOfflineLaunchAccountUseCase(accountRepository);
+            var skinRepository = new FakeSkinLibraryRepository(
+                new SkinAssetSummary
+                {
+                    SkinId = "skin-1",
+                    DisplayName = "Selected Skin",
+                    FileName = "selected-skin.png",
+                    StoragePath = skinPath,
+                    ModelType = SkinModelType.Slim,
+                    ImportedAtUtc = DateTimeOffset.UtcNow
+                },
+                new CapeAssetSummary
+                {
+                    CapeId = "cape-1",
+                    DisplayName = "Selected Cape",
+                    FileName = "selected-cape.png",
+                    StoragePath = capePath,
+                    ImportedAtUtc = DateTimeOffset.UtcNow
+                });
+            var appearanceRepository = new FakeAccountAppearanceRepository(new AccountAppearanceSelection
+            {
+                AccountId = account.AccountId,
+                SelectedSkinId = "skin-1",
+                SelectedCapeId = "cape-1"
+            });
+
+            var useCase = CreateUseCase(
+                new FakeInstanceRepository(instance),
+                resolveAccountUseCase,
+                skinLibraryRepository: skinRepository,
+                accountAppearanceRepository: appearanceRepository);
+
+            var result = await useCase.ExecuteAsync(new BuildLaunchPlanRequest
+            {
+                InstanceId = instance.InstanceId,
+                JavaExecutablePath = javaExecutablePath,
+                MainClass = "net.minecraft.client.main.Main",
+                AssetsDirectory = assetsDirectory,
+                AssetIndexId = "17",
+                ClasspathEntries = [classpathFile],
+                IsDryRun = true
+            });
+
+            Assert.True(result.IsSuccess);
+            var gameArguments = result.Value.GameArguments.Select(argument => argument.Value).ToArray();
+            var userPropertiesIndex = Array.IndexOf(gameArguments, "--userProperties");
+            Assert.True(userPropertiesIndex >= 0);
+            var userPropertiesJson = gameArguments[userPropertiesIndex + 1];
+            Assert.NotEqual("{}", userPropertiesJson);
+
+            using var userPropertiesDocument = JsonDocument.Parse(userPropertiesJson);
+            var textureProperty = Assert.Single(userPropertiesDocument.RootElement.GetProperty("textures").EnumerateArray());
+            var encodedTexturePayload = textureProperty.GetProperty("value").GetString();
+            Assert.False(string.IsNullOrWhiteSpace(encodedTexturePayload));
+
+            var decodedTexturePayload = Encoding.UTF8.GetString(Convert.FromBase64String(encodedTexturePayload!));
+            using var texturePayloadDocument = JsonDocument.Parse(decodedTexturePayload);
+            var texturesElement = texturePayloadDocument.RootElement.GetProperty("textures");
+            Assert.StartsWith("file:///", texturesElement.GetProperty("SKIN").GetProperty("url").GetString(), StringComparison.OrdinalIgnoreCase);
+            Assert.Equal("slim", texturesElement.GetProperty("SKIN").GetProperty("metadata").GetProperty("model").GetString());
+            Assert.StartsWith("file:///", texturesElement.GetProperty("CAPE").GetProperty("url").GetString(), StringComparison.OrdinalIgnoreCase);
+        }
+        finally
+        {
+            DeleteDirectoryIfExists(workingDirectory);
+            DeleteFileContainer(javaExecutablePath);
+            DeleteFileContainer(classpathFile);
+            DeleteDirectoryIfExists(assetsDirectory);
+            DeleteFileContainer(skinPath);
+            DeleteFileContainer(capePath);
+        }
+    }
+
     private static BuildLaunchPlanUseCase CreateUseCase(
         IInstanceRepository InstanceRepository,
         ResolveOfflineLaunchAccountUseCase ResolveAccountUseCase,
         IVersionManifestService? VersionManifestService = null,
-        ILoaderMetadataService? LoaderMetadataService = null)
+        ILoaderMetadataService? LoaderMetadataService = null,
+        ISkinLibraryRepository? skinLibraryRepository = null,
+        IAccountAppearanceRepository? accountAppearanceRepository = null)
     {
         return new BuildLaunchPlanUseCase(
             InstanceRepository,
             ResolveAccountUseCase,
             VersionManifestService ?? new FakeVersionManifestService(),
-            LoaderMetadataService ?? new FakeLoaderMetadataService());
+            LoaderMetadataService ?? new FakeLoaderMetadataService(),
+            NoOpJavaRuntimeResolver.Instance,
+            NullRuntimeMetadataStore.Instance,
+            skinLibraryRepository,
+            accountAppearanceRepository,
+            NullStructuredLogger.Instance,
+            DefaultOperationContextFactory.Instance);
     }
 
     private static LauncherInstance CreateInstalledInstance(string InstallLocation, LoaderType LoaderType, VersionId? LoaderVersion)
@@ -552,5 +654,51 @@ public sealed class BuildLaunchPlanUseCaseTests
         {
             return Task.FromResult(LoaderResult);
         }
+    }
+
+    private sealed class FakeSkinLibraryRepository : ISkinLibraryRepository
+    {
+        private readonly IReadOnlyList<SkinAssetSummary> skins;
+        private readonly IReadOnlyList<CapeAssetSummary> capes;
+
+        public FakeSkinLibraryRepository(SkinAssetSummary skin, CapeAssetSummary cape)
+        {
+            skins = [skin];
+            capes = [cape];
+        }
+
+        public Task<IReadOnlyList<SkinAssetSummary>> ListSkinsAsync(CancellationToken cancellationToken = default)
+            => Task.FromResult(skins);
+
+        public Task<SkinAssetSummary?> GetSkinByIdAsync(string skinId, CancellationToken cancellationToken = default)
+            => Task.FromResult<SkinAssetSummary?>(skins.FirstOrDefault(item => string.Equals(item.SkinId, skinId, StringComparison.Ordinal)));
+
+        public Task SaveSkinAsync(SkinAssetSummary skin, CancellationToken cancellationToken = default)
+            => Task.CompletedTask;
+
+        public Task<IReadOnlyList<CapeAssetSummary>> ListCapesAsync(CancellationToken cancellationToken = default)
+            => Task.FromResult(capes);
+
+        public Task<CapeAssetSummary?> GetCapeByIdAsync(string capeId, CancellationToken cancellationToken = default)
+            => Task.FromResult<CapeAssetSummary?>(capes.FirstOrDefault(item => string.Equals(item.CapeId, capeId, StringComparison.Ordinal)));
+
+        public Task SaveCapeAsync(CapeAssetSummary cape, CancellationToken cancellationToken = default)
+            => Task.CompletedTask;
+    }
+
+    private sealed class FakeAccountAppearanceRepository : IAccountAppearanceRepository
+    {
+        private readonly AccountAppearanceSelection? selection;
+
+        public FakeAccountAppearanceRepository(AccountAppearanceSelection? selection)
+        {
+            this.selection = selection;
+        }
+
+        public Task<AccountAppearanceSelection?> GetAsync(AccountId accountId, CancellationToken cancellationToken = default)
+            => Task.FromResult(selection is not null && selection.AccountId == accountId ? selection : null);
+
+        public Task SaveAsync(AccountAppearanceSelection selection, CancellationToken cancellationToken = default)
+            => Task.CompletedTask;
     }
 }

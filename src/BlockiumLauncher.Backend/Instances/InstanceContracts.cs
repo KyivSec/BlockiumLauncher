@@ -1,5 +1,14 @@
 namespace BlockiumLauncher.Application.Abstractions.Instances;
 
+public enum InstanceContentCategory
+{
+    Mods = 0,
+    ResourcePacks = 1,
+    Shaders = 2,
+    Worlds = 3,
+    Screenshots = 4
+}
+
 public enum ContentOriginProvider
 {
     Unknown = 0,
@@ -18,6 +27,7 @@ public sealed class ContentSourceMetadata
     public string? ProjectId { get; init; }
     public string? VersionId { get; init; }
     public string? FileId { get; init; }
+    public string? IconUrl { get; init; }
     public string? OriginalUrl { get; init; }
     public DateTimeOffset? AcquiredAtUtc { get; init; }
 }
@@ -45,6 +55,7 @@ public sealed class InstanceFileMetadata
     public long SizeBytes { get; init; }
     public DateTimeOffset? LastModifiedAtUtc { get; init; }
     public bool IsDisabled { get; init; }
+    public string? IconUrl { get; init; }
     public ContentSourceMetadata? Source { get; init; }
 }
 

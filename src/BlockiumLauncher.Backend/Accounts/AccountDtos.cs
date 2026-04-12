@@ -6,5 +6,6 @@ namespace BlockiumLauncher.Contracts.Accounts
         public string Username { get; init; } = string.Empty;
         public string PlayerUuid { get; init; } = string.Empty;
         public bool IsOffline { get; init; }
+        public string UserPropertiesJson { get; init; } = "{}";
     }
 }

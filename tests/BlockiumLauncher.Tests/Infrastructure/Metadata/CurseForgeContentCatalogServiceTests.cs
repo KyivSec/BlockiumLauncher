@@ -214,7 +214,7 @@ public sealed class CurseForgeContentCatalogServiceTests
     }
 
     [Fact]
-    public async Task GetProjectDetailsAsync_ParsesHtmlDescription()
+    public async Task GetProjectDetailsAsync_SimplifiesHtmlDescriptionToPlainText()
     {
         var handler = new FakeHttpMessageHandler((request, cancellationToken) =>
         {
@@ -252,7 +252,7 @@ public sealed class CurseForgeContentCatalogServiceTests
             {
                 return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
                 {
-                    Content = new StringContent("""{ "data": "<h1>Overview</h1><p>Rich HTML body.</p>" }""")
+                    Content = new StringContent("""{ "data": "<h1>Overview</h1><p>Rich <strong>HTML</strong> body.</p><img alt='Preview image' src='https://example.invalid/example.png'/>" }""")
                 });
             }
 
@@ -271,8 +271,8 @@ public sealed class CurseForgeContentCatalogServiceTests
         });
 
         Assert.True(result.IsSuccess);
-        Assert.Equal(CatalogDescriptionFormat.Html, result.Value.DescriptionFormat);
-        Assert.Equal("<h1>Overview</h1><p>Rich HTML body.</p>", result.Value.DescriptionContent);
+        Assert.Equal(CatalogDescriptionFormat.PlainText, result.Value.DescriptionFormat);
+        Assert.Equal("Overview\n\nRich HTML body.\n\n[Image: Preview image]", result.Value.DescriptionContent);
         Assert.Equal("Example Modpack", result.Value.Title);
     }
 
@@ -515,5 +515,71 @@ public sealed class CurseForgeContentCatalogServiceTests
         Assert.Null(result.Value.DownloadUrl);
         Assert.Equal("https://www.curseforge.com/minecraft/mc-mods/blocked-mod", result.Value.ProjectUrl);
         Assert.Equal("https://www.curseforge.com/minecraft/mc-mods/blocked-mod/files/2001", result.Value.FilePageUrl);
+    }
+
+    [Fact]
+    public async Task ResolveFileAsync_SelectsStrictlyCompatibleNewestFile()
+    {
+        var handler = new FakeHttpMessageHandler((request, cancellationToken) =>
+        {
+            var url = request.RequestUri!.ToString();
+
+            if (url.Contains("/v1/mods/1002/files?", StringComparison.Ordinal))
+            {
+                Assert.Contains("gameVersion=1.20.1", url, StringComparison.Ordinal);
+                Assert.Contains("modLoaderType=1", url, StringComparison.Ordinal);
+
+                return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new StringContent("""
+                    {
+                      "data": [
+                        {
+                          "id": 3003,
+                          "displayName": "Latest 1.21.1 build",
+                          "fileName": "example-1.21.1.jar",
+                          "downloadUrl": "https://downloads.invalid/example-1.21.1.jar",
+                          "fileDate": "2026-03-20T00:00:00Z",
+                          "fileLength": 10,
+                          "hashes": [ { "value": "AAA", "algo": 1 } ],
+                          "gameVersions": [ "1.21.1", "Forge" ],
+                          "isServerPack": false
+                        },
+                        {
+                          "id": 3002,
+                          "displayName": "Latest 1.20.1 build",
+                          "fileName": "example-1.20.1.jar",
+                          "downloadUrl": "https://downloads.invalid/example-1.20.1.jar",
+                          "fileDate": "2026-03-19T00:00:00Z",
+                          "fileLength": 10,
+                          "hashes": [ { "value": "BBB", "algo": 1 } ],
+                          "gameVersions": [ "1.20.1", "Forge" ],
+                          "isServerPack": false
+                        }
+                      ]
+                    }
+                    """)
+                });
+            }
+
+            throw new InvalidOperationException($"Unexpected request URL: {url}");
+        });
+
+        var service = new CurseForgeContentCatalogService(
+            new HttpClient(handler),
+            new CurseForgeOptions { ApiKey = "test-key" });
+
+        var result = await service.ResolveFileAsync(new CatalogFileResolutionQuery
+        {
+            Provider = CatalogProvider.CurseForge,
+            ContentType = CatalogContentType.Mod,
+            ProjectId = "1002",
+            GameVersion = "1.20.1",
+            Loader = "forge"
+        });
+
+        Assert.True(result.IsSuccess, result.IsFailure ? result.Error.Message : string.Empty);
+        Assert.Equal("3002", result.Value.FileId);
+        Assert.Equal("example-1.20.1.jar", result.Value.FileName);
     }
 }

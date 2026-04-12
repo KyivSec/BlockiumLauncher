@@ -8,7 +8,12 @@ public interface IMetadataHttpClient
 {
     Task<Result<string>> GetStringAsync(Uri Uri, CancellationToken CancellationToken);
     Task<Result<Stream>> GetStreamAsync(Uri Uri, CancellationToken CancellationToken);
+    Task<Result<MetadataStreamResponse>> GetStreamResponseAsync(Uri Uri, CancellationToken CancellationToken);
 }
+
+public sealed record MetadataStreamResponse(
+    Stream Stream,
+    long? ContentLength);
 
 public sealed class MetadataCachePolicy
 {
@@ -41,12 +46,16 @@ internal static class MetadataEndpoints
     internal const string ModrinthGameVersions = "https://api.modrinth.com/v2/tag/game_version";
     internal static string ModrinthProject(string projectId) => $"https://api.modrinth.com/v2/project/{Uri.EscapeDataString(projectId)}";
     internal static string ModrinthProjectVersions(string projectId) => $"https://api.modrinth.com/v2/project/{Uri.EscapeDataString(projectId)}/version";
+    internal static string ModrinthVersion(string versionId) => $"https://api.modrinth.com/v2/version/{Uri.EscapeDataString(versionId)}";
     internal const string CurseForgeCategories = "https://api.curseforge.com/v1/categories";
     internal const string CurseForgeModsSearch = "https://api.curseforge.com/v1/mods/search";
+    internal const string CurseForgeMods = "https://api.curseforge.com/v1/mods";
+    internal const string CurseForgeFiles = "https://api.curseforge.com/v1/mods/files";
     internal static string CurseForgeMod(string modId) => $"https://api.curseforge.com/v1/mods/{modId}";
     internal static string CurseForgeModDescription(string modId) => $"https://api.curseforge.com/v1/mods/{modId}/description";
     internal static string CurseForgeModFiles(string modId) => $"https://api.curseforge.com/v1/mods/{modId}/files";
     internal static string CurseForgeModFile(string modId, string fileId) => $"https://api.curseforge.com/v1/mods/{modId}/files/{fileId}";
+    internal static string CurseForgeModFileChangelog(string modId, string fileId) => $"https://api.curseforge.com/v1/mods/{modId}/files/{fileId}/changelog";
     internal static string CurseForgeModFileDownloadUrl(string modId, string fileId) => $"https://api.curseforge.com/v1/mods/{modId}/files/{fileId}/download-url";
 }
 
@@ -171,6 +180,14 @@ public sealed class MetadataHttpClient : IMetadataHttpClient
 
     public async Task<Result<Stream>> GetStreamAsync(Uri Uri, CancellationToken CancellationToken)
     {
+        var responseResult = await GetStreamResponseAsync(Uri, CancellationToken).ConfigureAwait(false);
+        return responseResult.IsFailure
+            ? Result<Stream>.Failure(responseResult.Error)
+            : Result<Stream>.Success(responseResult.Value.Stream);
+    }
+
+    public async Task<Result<MetadataStreamResponse>> GetStreamResponseAsync(Uri Uri, CancellationToken CancellationToken)
+    {
         for (var Attempt = 1; Attempt <= Options.MaxAttempts; Attempt++)
         {
             try
@@ -183,7 +200,9 @@ public sealed class MetadataHttpClient : IMetadataHttpClient
                 if (Response.IsSuccessStatusCode)
                 {
                     var Stream = await Response.Content.ReadAsStreamAsync(CancellationToken);
-                    return Result<Stream>.Success(new ResponseStream(Stream, Response));
+                    return Result<MetadataStreamResponse>.Success(new MetadataStreamResponse(
+                        new ResponseStream(Stream, Response),
+                        Response.Content.Headers.ContentLength));
                 }
 
                 Response.Dispose();
@@ -194,7 +213,7 @@ public sealed class MetadataHttpClient : IMetadataHttpClient
                     continue;
                 }
 
-                return Result<Stream>.Failure(
+                return Result<MetadataStreamResponse>.Failure(
                     MetadataErrors.HttpFailed(
                         $"HTTP request failed with status code {(int)Response.StatusCode}.",
                         Uri.ToString()));
@@ -205,21 +224,21 @@ public sealed class MetadataHttpClient : IMetadataHttpClient
             }
             catch (TaskCanceledException Exception) when (!CancellationToken.IsCancellationRequested)
             {
-                return Result<Stream>.Failure(
+                return Result<MetadataStreamResponse>.Failure(
                     MetadataErrors.Timeout(
                         "HTTP request timed out.",
                         Exception.Message));
             }
             catch (Exception Exception)
             {
-                return Result<Stream>.Failure(
+                return Result<MetadataStreamResponse>.Failure(
                     MetadataErrors.HttpFailed(
                         "HTTP request failed.",
                         Exception.Message));
             }
         }
 
-        return Result<Stream>.Failure(
+        return Result<MetadataStreamResponse>.Failure(
             MetadataErrors.HttpFailed("HTTP request failed after all retry attempts."));
     }
 

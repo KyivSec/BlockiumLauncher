@@ -6,18 +6,20 @@ using BlockiumLauncher.Domain.ValueObjects;
 using BlockiumLauncher.UI.GtkSharp.Utilities;
 using Gdk;
 using Gtk;
+using Microsoft.Extensions.DependencyInjection;
 
 namespace BlockiumLauncher.UI.GtkSharp.Windows;
 
 public sealed class AccountsWindow : Gtk.Window
 {
+    private readonly IServiceProvider ServiceProvider;
     private readonly ListAccountsUseCase ListAccountsUseCase;
     private readonly AddAccountUseCase AddAccountUseCase;
     private readonly SetDefaultAccountUseCase SetDefaultAccountUseCase;
     private readonly RemoveAccountUseCase RemoveAccountUseCase;
     private readonly GetAccountAppearanceUseCase GetAccountAppearanceUseCase;
     private readonly ListSkinAssetsUseCase ListSkinAssetsUseCase;
-    private readonly SkinCustomizationWindow SkinCustomizationWindow;
+    private SkinCustomizationWindow? SkinCustomizationWindow;
 
     private readonly ListBox AccountList = new()
     {
@@ -34,21 +36,21 @@ public sealed class AccountsWindow : Gtk.Window
     private string? SelectedAccountId;
 
     public AccountsWindow(
+        IServiceProvider serviceProvider,
         ListAccountsUseCase listAccountsUseCase,
         AddAccountUseCase addAccountUseCase,
         SetDefaultAccountUseCase setDefaultAccountUseCase,
         RemoveAccountUseCase removeAccountUseCase,
         GetAccountAppearanceUseCase getAccountAppearanceUseCase,
-        ListSkinAssetsUseCase listSkinAssetsUseCase,
-        SkinCustomizationWindow skinCustomizationWindow) : base("Accounts")
+        ListSkinAssetsUseCase listSkinAssetsUseCase) : base("Accounts")
     {
+        ServiceProvider = serviceProvider ?? throw new ArgumentNullException(nameof(serviceProvider));
         ListAccountsUseCase = listAccountsUseCase ?? throw new ArgumentNullException(nameof(listAccountsUseCase));
         AddAccountUseCase = addAccountUseCase ?? throw new ArgumentNullException(nameof(addAccountUseCase));
         SetDefaultAccountUseCase = setDefaultAccountUseCase ?? throw new ArgumentNullException(nameof(setDefaultAccountUseCase));
         RemoveAccountUseCase = removeAccountUseCase ?? throw new ArgumentNullException(nameof(removeAccountUseCase));
         GetAccountAppearanceUseCase = getAccountAppearanceUseCase ?? throw new ArgumentNullException(nameof(getAccountAppearanceUseCase));
         ListSkinAssetsUseCase = listSkinAssetsUseCase ?? throw new ArgumentNullException(nameof(listSkinAssetsUseCase));
-        SkinCustomizationWindow = skinCustomizationWindow ?? throw new ArgumentNullException(nameof(skinCustomizationWindow));
 
         SetDefaultSize(820, 520);
         Resizable = true;
@@ -57,14 +59,23 @@ public sealed class AccountsWindow : Gtk.Window
         DeleteEvent += (_, args) =>
         {
             args.RetVal = true;
-            SkinCustomizationWindow.Hide();
-            Hide();
+            CloseWindow();
         };
 
-        SkinCustomizationWindow.AppearanceApplied += async (_, args) =>
+        Destroyed += (_, _) =>
         {
-            SelectedAccountId = args.AccountId.ToString();
-            await RefreshAccountsAsync().ConfigureAwait(false);
+            if (SkinCustomizationWindow is not null)
+            {
+                try
+                {
+                    SkinCustomizationWindow.Destroy();
+                }
+                catch
+                {
+                }
+            }
+
+            LauncherWindowMemory.RequestAggressiveCleanup();
         };
 
         Titlebar = BuildHeaderBar();
@@ -74,43 +85,64 @@ public sealed class AccountsWindow : Gtk.Window
 
     public void PresentFrom(Gtk.Window owner)
     {
+        TransientFor = owner;
         ShowAll();
         Present();
         _ = RefreshAccountsAsync();
     }
 
+    private void CloseWindow()
+    {
+        if (SkinCustomizationWindow is not null)
+        {
+            try
+            {
+                SkinCustomizationWindow.Destroy();
+            }
+            catch
+            {
+            }
+        }
+
+        Destroy();
+    }
+
+    private SkinCustomizationWindow GetOrCreateSkinCustomizationWindow()
+    {
+        if (SkinCustomizationWindow is not null)
+        {
+            return SkinCustomizationWindow;
+        }
+
+        var window = ServiceProvider.GetRequiredService<SkinCustomizationWindow>();
+        window.AppearanceApplied += HandleAppearanceApplied;
+        window.Destroyed += HandleSkinCustomizationWindowDestroyed;
+        SkinCustomizationWindow = window;
+        return window;
+    }
+
+    private async void HandleAppearanceApplied(object? sender, AccountAppearanceAppliedEventArgs args)
+    {
+        SelectedAccountId = args.AccountId.ToString();
+        await RefreshAccountsAsync().ConfigureAwait(false);
+    }
+
+    private void HandleSkinCustomizationWindowDestroyed(object? sender, EventArgs e)
+    {
+        if (sender is SkinCustomizationWindow window)
+        {
+            window.AppearanceApplied -= HandleAppearanceApplied;
+            window.Destroyed -= HandleSkinCustomizationWindowDestroyed;
+            if (ReferenceEquals(SkinCustomizationWindow, window))
+            {
+                SkinCustomizationWindow = null;
+            }
+        }
+    }
+
     private Widget BuildHeaderBar()
     {
-        var bar = new HeaderBar
-        {
-            ShowCloseButton = true,
-            HasSubtitle = false,
-            DecorationLayout = ":minimize,maximize,close"
-        };
-        bar.StyleContext.AddClass("topbar-shell");
-
-        var content = new Box(Orientation.Vertical, 2)
-        {
-            Halign = Align.Start
-        };
-        content.StyleContext.AddClass("topbar-content");
-
-        var title = new Label("Accounts")
-        {
-            Xalign = 0
-        };
-        title.StyleContext.AddClass("settings-title");
-
-        var subtitle = new Label("Manage launcher profiles and customize offline account skins.")
-        {
-            Xalign = 0
-        };
-        subtitle.StyleContext.AddClass("settings-subtitle");
-
-        content.PackStart(title, false, false, 0);
-        content.PackStart(subtitle, false, false, 0);
-        bar.PackStart(content);
-        return bar;
+        return LauncherGtkChrome.CreateHeaderBar("Accounts", "Manage launcher profiles and customize offline account skins.", allowWindowControls: true);
     }
 
     private Widget BuildRoot()
@@ -154,10 +186,10 @@ public sealed class AccountsWindow : Gtk.Window
 
         var content = new Box(Orientation.Vertical, 0)
         {
-            MarginTop = 12,
-            MarginBottom = 12,
-            MarginStart = 12,
-            MarginEnd = 12
+            MarginTop = 10,
+            MarginBottom = 10,
+            MarginStart = 10,
+            MarginEnd = 10
         };
         content.PackStart(scroller, true, true, 0);
 
@@ -177,10 +209,10 @@ public sealed class AccountsWindow : Gtk.Window
 
         var content = new Box(Orientation.Vertical, 10)
         {
-            MarginTop = 16,
-            MarginBottom = 16,
-            MarginStart = 16,
-            MarginEnd = 16
+            MarginTop = 12,
+            MarginBottom = 12,
+            MarginStart = 12,
+            MarginEnd = 12
         };
 
         var addButton = new Button("Add account");
@@ -274,11 +306,11 @@ public sealed class AccountsWindow : Gtk.Window
 
         var content = new Box(Orientation.Horizontal, 12)
         {
-            HeightRequest = 60,
-            MarginTop = 8,
-            MarginBottom = 8,
-            MarginStart = 14,
-            MarginEnd = 14,
+            HeightRequest = 52,
+            MarginTop = 6,
+            MarginBottom = 6,
+            MarginStart = 12,
+            MarginEnd = 12,
             Hexpand = true
         };
         content.StyleContext.AddClass("account-row-body");
@@ -371,21 +403,12 @@ public sealed class AccountsWindow : Gtk.Window
 
     private async Task AddOfflineAccountAsync()
     {
-        using var dialog = new Dialog("Add offline account", this, DialogFlags.Modal | DialogFlags.DestroyWithParent);
-        dialog.Titlebar = BuildDialogHeaderBar(
+        using var dialog = LauncherGtkChrome.CreateFormDialog(
+            this,
             "Add offline account",
-            "Create a local offline account for launcher testing and customization.");
-        var cancelButton = new Button("Cancel");
-        cancelButton.StyleContext.AddClass("action-button");
-        dialog.AddActionWidget(cancelButton, ResponseType.Cancel);
-
-        var addButton = new Button("Add");
-        addButton.StyleContext.AddClass("primary-button");
-        dialog.AddActionWidget(addButton, ResponseType.Ok);
-        dialog.DefaultResponse = ResponseType.Ok;
-        dialog.Resizable = false;
-        dialog.SkipTaskbarHint = true;
-        dialog.WindowPosition = WindowPosition.CenterOnParent;
+            "Create a local offline account for launcher testing and customization.",
+            resizable: false,
+            width: 430);
 
         var entry = new Entry
         {
@@ -399,15 +422,24 @@ public sealed class AccountsWindow : Gtk.Window
             Active = Accounts.Count == 0
         };
 
-        var card = new EventBox();
-        card.StyleContext.AddClass("settings-card");
-
         var content = new Box(Orientation.Vertical, 8)
         {
             MarginTop = 14,
             MarginBottom = 14,
             MarginStart = 14,
             MarginEnd = 14
+        };
+        content.StyleContext.AddClass("launcher-window-root");
+
+        var shell = new EventBox();
+        shell.StyleContext.AddClass("launcher-section-shell");
+
+        var form = new Box(Orientation.Vertical, 8)
+        {
+            MarginTop = 12,
+            MarginBottom = 12,
+            MarginStart = 12,
+            MarginEnd = 12
         };
 
         var entryLabel = new Label("Username")
@@ -416,22 +448,33 @@ public sealed class AccountsWindow : Gtk.Window
         };
         entryLabel.StyleContext.AddClass("app-field-label");
 
-        var helper = new Label("Offline only. This name will be shown in the launcher UI.")
+        var footer = new Box(Orientation.Horizontal, 10)
         {
-            Xalign = 0,
-            Wrap = true
+            Halign = Align.End,
+            MarginTop = 6
         };
-        helper.StyleContext.AddClass("app-field-help");
+        footer.StyleContext.AddClass("launcher-dialog-footer");
 
-        content.PackStart(entryLabel, false, false, 0);
-        content.PackStart(entry, false, false, 0);
-        content.PackStart(helper, false, false, 0);
-        content.PackStart(setDefault, false, false, 0);
+        var cancelButton = new Button("Cancel");
+        cancelButton.StyleContext.AddClass("action-button");
+        cancelButton.Clicked += (_, _) => dialog.Respond(ResponseType.Cancel);
 
-        card.Add(content);
-        dialog.ContentArea.BorderWidth = 0;
-        dialog.ContentArea.Spacing = 0;
-        dialog.ContentArea.PackStart(card, false, false, 0);
+        var addButton = new Button("Add");
+        addButton.StyleContext.AddClass("primary-button");
+        addButton.Clicked += (_, _) => dialog.Respond(ResponseType.Ok);
+
+        footer.PackStart(cancelButton, false, false, 0);
+        footer.PackStart(addButton, false, false, 0);
+
+        form.PackStart(entryLabel, false, false, 0);
+        form.PackStart(entry, false, false, 0);
+        form.PackStart(setDefault, false, false, 0);
+        form.PackStart(footer, false, false, 0);
+
+        shell.Add(form);
+        content.PackStart(shell, false, false, 0);
+        dialog.ContentArea.PackStart(content, true, true, 0);
+        dialog.DefaultResponse = ResponseType.Ok;
 
         dialog.ShowAll();
 
@@ -462,40 +505,6 @@ public sealed class AccountsWindow : Gtk.Window
 
         SelectedAccountId = result.Value.AccountId.ToString();
         await RefreshAccountsAsync().ConfigureAwait(false);
-    }
-
-    private static Widget BuildDialogHeaderBar(string titleText, string subtitleText)
-    {
-        var bar = new HeaderBar
-        {
-            ShowCloseButton = true,
-            HasSubtitle = false,
-            DecorationLayout = ":close"
-        };
-        bar.StyleContext.AddClass("topbar-shell");
-
-        var content = new Box(Orientation.Vertical, 2)
-        {
-            Halign = Align.Start
-        };
-        content.StyleContext.AddClass("topbar-content");
-
-        var title = new Label(titleText)
-        {
-            Xalign = 0
-        };
-        title.StyleContext.AddClass("settings-title");
-
-        var subtitle = new Label(subtitleText)
-        {
-            Xalign = 0
-        };
-        subtitle.StyleContext.AddClass("settings-subtitle");
-
-        content.PackStart(title, false, false, 0);
-        content.PackStart(subtitle, false, false, 0);
-        bar.PackStart(content);
-        return bar;
     }
 
     private async Task SetSelectedAccountAsDefaultAsync()
@@ -529,17 +538,7 @@ public sealed class AccountsWindow : Gtk.Window
             return;
         }
 
-        using var confirm = new MessageDialog(
-            this,
-            DialogFlags.Modal,
-            MessageType.Question,
-            ButtonsType.YesNo,
-            $"Delete account '{account.Username}'?")
-        {
-            Title = "Delete account"
-        };
-
-        if ((ResponseType)confirm.Run() != ResponseType.Yes)
+        if (!LauncherGtkChrome.Confirm(this, "Delete account", $"Delete account '{account.Username}'?", confirmText: "Delete", danger: true))
         {
             return;
         }
@@ -573,7 +572,7 @@ public sealed class AccountsWindow : Gtk.Window
             return;
         }
 
-        SkinCustomizationWindow.PresentForAccount(this, account);
+        GetOrCreateSkinCustomizationWindow().PresentForAccount(this, account);
     }
 
     private void RestoreSelection()
@@ -610,32 +609,12 @@ public sealed class AccountsWindow : Gtk.Window
 
     private void ShowInfo(string title, string message)
     {
-        using var dialog = new MessageDialog(
-            this,
-            DialogFlags.Modal,
-            MessageType.Info,
-            ButtonsType.Ok,
-            message)
-        {
-            Title = title
-        };
-
-        dialog.Run();
+        LauncherGtkChrome.ShowMessage(this, title, message, MessageType.Info);
     }
 
     private void ShowError(string title, string message)
     {
-        using var dialog = new MessageDialog(
-            this,
-            DialogFlags.Modal,
-            MessageType.Error,
-            ButtonsType.Ok,
-            message)
-        {
-            Title = title
-        };
-
-        dialog.Run();
+        LauncherGtkChrome.ShowMessage(this, title, message, MessageType.Error);
     }
 
     private sealed record AccountRowModel(LauncherAccount Account, string? SkinPath);

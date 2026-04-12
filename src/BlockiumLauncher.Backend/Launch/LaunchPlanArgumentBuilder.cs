@@ -76,7 +76,7 @@ internal static class LaunchPlanArgumentBuilder
             new() { Value = "--versionType" },
             new() { Value = "release" },
             new() { Value = "--userProperties" },
-            new() { Value = "{}" }
+            new() { Value = string.IsNullOrWhiteSpace(Account.UserPropertiesJson) ? "{}" : Account.UserPropertiesJson }
         };
 
         if (AssetsDirectory is not null)

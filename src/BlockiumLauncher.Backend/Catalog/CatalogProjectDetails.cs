@@ -69,3 +69,41 @@ public sealed class GetCatalogProviderMetadataUseCase
         }, cancellationToken);
     }
 }
+
+public sealed class GetCatalogFileDetailsRequest
+{
+    public CatalogProvider Provider { get; init; } = CatalogProvider.Modrinth;
+    public CatalogContentType ContentType { get; init; }
+    public string ProjectId { get; init; } = string.Empty;
+    public string FileId { get; init; } = string.Empty;
+}
+
+public sealed class GetCatalogFileDetailsUseCase
+{
+    private readonly IContentCatalogFileService contentCatalogFileService;
+
+    public GetCatalogFileDetailsUseCase(IContentCatalogFileService contentCatalogFileService)
+    {
+        this.contentCatalogFileService = contentCatalogFileService ?? throw new ArgumentNullException(nameof(contentCatalogFileService));
+    }
+
+    public Task<Result<CatalogFileDetails>> ExecuteAsync(
+        GetCatalogFileDetailsRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        if (request is null ||
+            string.IsNullOrWhiteSpace(request.ProjectId) ||
+            string.IsNullOrWhiteSpace(request.FileId))
+        {
+            return Task.FromResult(Result<CatalogFileDetails>.Failure(CatalogErrors.InvalidRequest));
+        }
+
+        return contentCatalogFileService.GetFileDetailsAsync(new CatalogFileDetailsQuery
+        {
+            Provider = request.Provider,
+            ContentType = request.ContentType,
+            ProjectId = request.ProjectId.Trim(),
+            FileId = request.FileId.Trim()
+        }, cancellationToken);
+    }
+}

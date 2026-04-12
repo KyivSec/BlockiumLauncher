@@ -134,4 +134,14 @@ namespace BlockiumLauncher.Application.UseCases.Launch
             this.MaxLines = MaxLines;
         }
     }
+
+    public sealed class GetLatestLaunchOutputRequest
+    {
+        public InstanceId InstanceId { get; init; }
+    }
+
+    public sealed class ClearLatestLaunchOutputRequest
+    {
+        public InstanceId InstanceId { get; init; }
+    }
 }

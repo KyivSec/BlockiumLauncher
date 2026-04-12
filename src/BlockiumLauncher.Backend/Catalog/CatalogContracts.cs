@@ -65,6 +65,10 @@ public interface IContentCatalogFileProvider
     Task<Result<CatalogFileSummary>> ResolveFileAsync(
         CatalogFileResolutionQuery query,
         CancellationToken cancellationToken = default);
+
+    Task<Result<CatalogFileDetails>> GetFileDetailsAsync(
+        CatalogFileDetailsQuery query,
+        CancellationToken cancellationToken = default);
 }
 
 public interface IContentCatalogFileService
@@ -75,6 +79,10 @@ public interface IContentCatalogFileService
 
     Task<Result<CatalogFileSummary>> ResolveFileAsync(
         CatalogFileResolutionQuery query,
+        CancellationToken cancellationToken = default);
+
+    Task<Result<CatalogFileDetails>> GetFileDetailsAsync(
+        CatalogFileDetailsQuery query,
         CancellationToken cancellationToken = default);
 }
 

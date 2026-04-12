@@ -8,6 +8,8 @@ public sealed class LaunchProfile
 
     public int MinMemoryMb { get; private set; }
     public int MaxMemoryMb { get; private set; }
+    public int? PreferredJavaMajor { get; private set; }
+    public bool SkipCompatibilityChecks { get; private set; }
     public IReadOnlyList<string> ExtraJvmArgs => ExtraJvmArgsField;
     public IReadOnlyList<string> ExtraGameArgs => ExtraGameArgsField;
     public IReadOnlyDictionary<string, string> EnvironmentVariables => EnvironmentVariablesField;
@@ -17,9 +19,12 @@ public sealed class LaunchProfile
         int MaxMemoryMb,
         IEnumerable<string> ExtraJvmArgs,
         IEnumerable<string> ExtraGameArgs,
-        IEnumerable<KeyValuePair<string, string>> EnvironmentVariables)
+        IEnumerable<KeyValuePair<string, string>> EnvironmentVariables,
+        int? PreferredJavaMajor = null,
+        bool SkipCompatibilityChecks = false)
     {
         ValidateMemory(MinMemoryMb, MaxMemoryMb);
+        ValidatePreferredJavaMajor(PreferredJavaMajor);
 
         ExtraJvmArgsField = NormalizeArgs(ExtraJvmArgs, nameof(ExtraJvmArgs));
         ExtraGameArgsField = NormalizeArgs(ExtraGameArgs, nameof(ExtraGameArgs));
@@ -27,13 +32,20 @@ public sealed class LaunchProfile
 
         this.MinMemoryMb = MinMemoryMb;
         this.MaxMemoryMb = MaxMemoryMb;
+        this.PreferredJavaMajor = PreferredJavaMajor;
+        this.SkipCompatibilityChecks = SkipCompatibilityChecks;
     }
 
     public static LaunchProfile CreateDefault()
     {
+        return CreateDefault(2048, 4096);
+    }
+
+    public static LaunchProfile CreateDefault(int minMemoryMb, int maxMemoryMb)
+    {
         return new(
-            MinMemoryMb: 2048,
-            MaxMemoryMb: 4096,
+            MinMemoryMb: minMemoryMb,
+            MaxMemoryMb: maxMemoryMb,
             ExtraJvmArgs: Array.Empty<string>(),
             ExtraGameArgs: Array.Empty<string>(),
             EnvironmentVariables: Array.Empty<KeyValuePair<string, string>>());
@@ -44,6 +56,13 @@ public sealed class LaunchProfile
         ValidateMemory(MinMemoryMb, MaxMemoryMb);
         this.MinMemoryMb = MinMemoryMb;
         this.MaxMemoryMb = MaxMemoryMb;
+    }
+
+    public void WithJavaPreference(int? preferredJavaMajor, bool skipCompatibilityChecks)
+    {
+        ValidatePreferredJavaMajor(preferredJavaMajor);
+        PreferredJavaMajor = preferredJavaMajor;
+        SkipCompatibilityChecks = skipCompatibilityChecks;
     }
 
     public void WithExtraJvmArgs(IEnumerable<string> Args)
@@ -83,6 +102,14 @@ public sealed class LaunchProfile
         if (MinMemoryMb > MaxMemoryMb)
         {
             throw new ArgumentException("MinMemoryMb cannot be greater than MaxMemoryMb.");
+        }
+    }
+
+    private static void ValidatePreferredJavaMajor(int? preferredJavaMajor)
+    {
+        if (preferredJavaMajor is not null && preferredJavaMajor <= 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(preferredJavaMajor), "Preferred Java major must be greater than zero.");
         }
     }
 

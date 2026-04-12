@@ -12,6 +12,7 @@ public interface ILoaderRuntimePreparer
     Task<Result<string>> PrepareAsync(
         InstallPlan plan,
         ITempWorkspace workspace,
+        IProgress<InstallPreparationProgress>? progress = null,
         CancellationToken cancellationToken = default);
 }
 
@@ -32,9 +33,10 @@ public sealed class FabricRuntimePreparer : ILoaderRuntimePreparer
     public Task<Result<string>> PrepareAsync(
         InstallPlan plan,
         ITempWorkspace workspace,
+        IProgress<InstallPreparationProgress>? progress = null,
         CancellationToken cancellationToken = default)
     {
-        return Orchestrator.PrepareAsync(plan, workspace, cancellationToken);
+        return Orchestrator.PrepareAsync(plan, workspace, progress, cancellationToken);
     }
 }
 
@@ -55,9 +57,10 @@ public sealed class ForgeRuntimePreparer : ILoaderRuntimePreparer
     public Task<Result<string>> PrepareAsync(
         InstallPlan plan,
         ITempWorkspace workspace,
+        IProgress<InstallPreparationProgress>? progress = null,
         CancellationToken cancellationToken = default)
     {
-        return Orchestrator.PrepareAsync(plan, workspace, cancellationToken);
+        return Orchestrator.PrepareAsync(plan, workspace, progress, cancellationToken);
     }
 }
 
@@ -78,9 +81,10 @@ public sealed class NeoForgeRuntimePreparer : ILoaderRuntimePreparer
     public Task<Result<string>> PrepareAsync(
         InstallPlan plan,
         ITempWorkspace workspace,
+        IProgress<InstallPreparationProgress>? progress = null,
         CancellationToken cancellationToken = default)
     {
-        return Orchestrator.PrepareAsync(plan, workspace, cancellationToken);
+        return Orchestrator.PrepareAsync(plan, workspace, progress, cancellationToken);
     }
 }
 
@@ -101,8 +105,9 @@ public sealed class QuiltRuntimePreparer : ILoaderRuntimePreparer
     public Task<Result<string>> PrepareAsync(
         InstallPlan plan,
         ITempWorkspace workspace,
+        IProgress<InstallPreparationProgress>? progress = null,
         CancellationToken cancellationToken = default)
     {
-        return Orchestrator.PrepareAsync(plan, workspace, cancellationToken);
+        return Orchestrator.PrepareAsync(plan, workspace, progress, cancellationToken);
     }
 }

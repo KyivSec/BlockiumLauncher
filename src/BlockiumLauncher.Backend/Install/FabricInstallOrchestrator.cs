@@ -23,6 +23,7 @@ public sealed class FabricInstallOrchestrator : IFabricInstallOrchestrator
     public async Task<Result<string>> PrepareAsync(
         InstallPlan plan,
         ITempWorkspace workspace,
+        IProgress<InstallPreparationProgress>? progress = null,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(plan);
@@ -91,7 +92,7 @@ public sealed class FabricInstallOrchestrator : IFabricInstallOrchestrator
             await JsonSerializer.SerializeAsync(stream, snapshot, cancellationToken: cancellationToken);
         }
 
-        var prepareResult = await FallbackPreparer.PrepareAsync(plan, workspace, cancellationToken).ConfigureAwait(false);
+        var prepareResult = await FallbackPreparer.PrepareAsync(plan, workspace, progress, cancellationToken).ConfigureAwait(false);
 
         if (prepareResult.IsSuccess && File.Exists(snapshotPath))
         {

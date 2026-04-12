@@ -241,6 +241,39 @@ public sealed class LaunchProcessRunner : ILaunchProcessRunner
         }
     }
 
+    public Task<Result<IReadOnlyList<LaunchOutputLine>>> GetLatestOutputAsync(string instanceId, CancellationToken CancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(instanceId))
+        {
+            return Task.FromResult(Result<IReadOnlyList<LaunchOutputLine>>.Failure(LaunchErrors.InvalidRequest));
+        }
+
+        var session = Sessions.Values
+            .Where(session => string.Equals(session.Plan.InstanceId, instanceId.Trim(), StringComparison.Ordinal))
+            .OrderByDescending(session => session.StartedAtUtc ?? DateTimeOffset.MinValue)
+            .FirstOrDefault();
+
+        return session is null
+            ? Task.FromResult(Result<IReadOnlyList<LaunchOutputLine>>.Success(Array.Empty<LaunchOutputLine>()))
+            : Task.FromResult(Result<IReadOnlyList<LaunchOutputLine>>.Success(session.GetOutputLines()));
+    }
+
+    public Task<Result> ClearLatestOutputAsync(string instanceId, CancellationToken CancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(instanceId))
+        {
+            return Task.FromResult(Result.Failure(LaunchErrors.InvalidRequest));
+        }
+
+        var session = Sessions.Values
+            .Where(session => string.Equals(session.Plan.InstanceId, instanceId.Trim(), StringComparison.Ordinal))
+            .OrderByDescending(session => session.StartedAtUtc ?? DateTimeOffset.MinValue)
+            .FirstOrDefault();
+
+        session?.ClearOutput();
+        return Task.FromResult(Result.Success());
+    }
+
     private static string NormalizeJavaExecutablePath(string JavaPath)
     {
         if (!OperatingSystem.IsWindows())
@@ -308,6 +341,14 @@ public sealed class LaunchProcessRunner : ILaunchProcessRunner
             lock (Sync)
             {
                 return OutputLines.ToList();
+            }
+        }
+
+        public void ClearOutput()
+        {
+            lock (Sync)
+            {
+                OutputLines.Clear();
             }
         }
 

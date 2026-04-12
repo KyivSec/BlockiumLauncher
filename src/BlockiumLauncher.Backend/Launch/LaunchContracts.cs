@@ -11,6 +11,8 @@ namespace BlockiumLauncher.Application.Abstractions.Launch
         Task<Result<LaunchInstanceResult>> StartAsync(LaunchPlanDto Plan, CancellationToken CancellationToken = default);
         Task<Result<LaunchInstanceResult>> GetStatusAsync(Guid LaunchId, CancellationToken CancellationToken = default);
         Task<Result> StopAsync(Guid LaunchId, CancellationToken CancellationToken = default);
+        Task<Result<IReadOnlyList<LaunchOutputLine>>> GetLatestOutputAsync(string instanceId, CancellationToken CancellationToken = default);
+        Task<Result> ClearLatestOutputAsync(string instanceId, CancellationToken CancellationToken = default);
     }
 
     public interface ILaunchSessionObserver

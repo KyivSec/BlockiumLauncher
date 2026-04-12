@@ -90,6 +90,7 @@ public sealed class InstanceContentInstallerTests
         public Task<global::BlockiumLauncher.Shared.Results.Result<string>> PrepareAsync(
             InstallPlan plan,
             ITempWorkspace workspace,
+            IProgress<InstallPreparationProgress>? progress = null,
             CancellationToken cancellationToken = default)
         {
             return Task.FromResult(result);

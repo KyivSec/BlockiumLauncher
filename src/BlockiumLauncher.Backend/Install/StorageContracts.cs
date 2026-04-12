@@ -24,6 +24,7 @@ public interface IInstanceContentInstaller
     Task<Result<string>> PrepareAsync(
         InstallPlan Plan,
         ITempWorkspace Workspace,
+        IProgress<InstallPreparationProgress>? Progress = null,
         CancellationToken CancellationToken = default);
 }
 

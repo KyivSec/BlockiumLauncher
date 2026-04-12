@@ -86,6 +86,7 @@ namespace BlockiumLauncher.Application.UseCases.Common
         public string FileId { get; init; } = string.Empty;
         public string DisplayName { get; init; } = string.Empty;
         public string FileName { get; init; } = string.Empty;
+        public string? IconUrl { get; init; }
         public string? DownloadUrl { get; init; }
         public string? ProjectUrl { get; init; }
         public string? FilePageUrl { get; init; }
@@ -96,6 +97,19 @@ namespace BlockiumLauncher.Application.UseCases.Common
         public IReadOnlyList<string> Loaders { get; init; } = [];
         public bool IsServerPack { get; init; }
         public bool RequiresManualDownload { get; init; }
+    }
+
+    public sealed class CatalogFileDetails
+    {
+        public CatalogProvider Provider { get; init; } = CatalogProvider.Modrinth;
+        public CatalogContentType ContentType { get; init; }
+        public string ProjectId { get; init; } = string.Empty;
+        public string FileId { get; init; } = string.Empty;
+        public string DisplayName { get; init; } = string.Empty;
+        public string? ProjectUrl { get; init; }
+        public string? FilePageUrl { get; init; }
+        public DateTimeOffset? PublishedAtUtc { get; init; }
+        public string ChangelogText { get; init; } = string.Empty;
     }
 
     public enum CatalogProvider
@@ -137,7 +151,17 @@ namespace BlockiumLauncher.Application.UseCases.Common
         public string ProjectId { get; init; } = string.Empty;
         public string? FileId { get; init; }
         public string? GameVersion { get; init; }
+        public IReadOnlyList<string> GameVersions { get; init; } = [];
         public string? Loader { get; init; }
+        public IReadOnlyList<string> Loaders { get; init; } = [];
+    }
+
+    public sealed class CatalogFileDetailsQuery
+    {
+        public CatalogProvider Provider { get; init; } = CatalogProvider.CurseForge;
+        public CatalogContentType ContentType { get; init; }
+        public string ProjectId { get; init; } = string.Empty;
+        public string FileId { get; init; } = string.Empty;
     }
 
     public sealed class CatalogProjectDetailsQuery

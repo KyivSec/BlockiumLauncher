@@ -2,6 +2,7 @@ using BlockiumLauncher.Application.Abstractions.Diagnostics;
 using BlockiumLauncher.Application.Abstractions.Instances;
 using BlockiumLauncher.Application.Abstractions.Services;
 using BlockiumLauncher.Domain.Entities;
+using BlockiumLauncher.Domain.Enums;
 using BlockiumLauncher.Shared.Errors;
 using BlockiumLauncher.Shared.Results;
 
@@ -26,7 +27,12 @@ namespace BlockiumLauncher.Application.Diagnostics
     {
         public static readonly NoOpJavaRuntimeResolver Instance = new();
 
-        public Task<Result<string>> ResolveExecutablePathAsync(string MinecraftVersion, CancellationToken CancellationToken)
+        public Task<Result<string>> ResolveExecutablePathAsync(
+            string MinecraftVersion,
+            LoaderType loaderType,
+            int? preferredJavaMajor = null,
+            bool skipCompatibilityChecks = false,
+            CancellationToken CancellationToken = default)
         {
             return Task.FromResult(Result<string>.Failure(new Error(
                 "Java.ResolveUnavailable",
@@ -80,6 +86,16 @@ namespace BlockiumLauncher.Application.Diagnostics
         }
 
         public Task<InstanceContentMetadata> SetModEnabledAsync(LauncherInstance instance, string modReference, bool enabled, CancellationToken cancellationToken = default)
+        {
+            return Task.FromResult(new InstanceContentMetadata());
+        }
+
+        public Task<InstanceContentMetadata> SetContentEnabledAsync(LauncherInstance instance, InstanceContentCategory category, string contentReference, bool enabled, CancellationToken cancellationToken = default)
+        {
+            return Task.FromResult(new InstanceContentMetadata());
+        }
+
+        public Task<InstanceContentMetadata> DeleteContentAsync(LauncherInstance instance, InstanceContentCategory category, string contentReference, CancellationToken cancellationToken = default)
         {
             return Task.FromResult(new InstanceContentMetadata());
         }

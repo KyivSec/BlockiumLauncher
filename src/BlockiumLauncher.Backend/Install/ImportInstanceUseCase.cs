@@ -20,6 +20,7 @@ public sealed class ImportInstanceUseCase
     private readonly IInstanceRepository InstanceRepository;
     private readonly ILauncherPaths LauncherPaths;
     private readonly IInstanceContentMetadataService InstanceContentMetadataService;
+    private readonly ILauncherRuntimeSettingsRepository LauncherRuntimeSettingsRepository;
 
     public ImportInstanceUseCase(
         ITempWorkspaceFactory TempWorkspaceFactory,
@@ -27,12 +28,30 @@ public sealed class ImportInstanceUseCase
         IInstanceRepository InstanceRepository,
         ILauncherPaths LauncherPaths,
         IInstanceContentMetadataService InstanceContentMetadataService)
+        : this(
+            TempWorkspaceFactory,
+            FileTransaction,
+            InstanceRepository,
+            LauncherPaths,
+            InstanceContentMetadataService,
+            new DefaultLauncherRuntimeSettingsRepository())
+    {
+    }
+
+    public ImportInstanceUseCase(
+        ITempWorkspaceFactory TempWorkspaceFactory,
+        IFileTransaction FileTransaction,
+        IInstanceRepository InstanceRepository,
+        ILauncherPaths LauncherPaths,
+        IInstanceContentMetadataService InstanceContentMetadataService,
+        ILauncherRuntimeSettingsRepository LauncherRuntimeSettingsRepository)
     {
         this.TempWorkspaceFactory = TempWorkspaceFactory ?? throw new ArgumentNullException(nameof(TempWorkspaceFactory));
         this.FileTransaction = FileTransaction ?? throw new ArgumentNullException(nameof(FileTransaction));
         this.InstanceRepository = InstanceRepository ?? throw new ArgumentNullException(nameof(InstanceRepository));
         this.LauncherPaths = LauncherPaths ?? throw new ArgumentNullException(nameof(LauncherPaths));
         this.InstanceContentMetadataService = InstanceContentMetadataService ?? throw new ArgumentNullException(nameof(InstanceContentMetadataService));
+        this.LauncherRuntimeSettingsRepository = LauncherRuntimeSettingsRepository ?? throw new ArgumentNullException(nameof(LauncherRuntimeSettingsRepository));
     }
 
     public async Task<Result<ImportInstanceResult>> ExecuteAsync(
@@ -109,6 +128,7 @@ public sealed class ImportInstanceUseCase
                 }
             }
 
+            var runtimeSettings = await LauncherRuntimeSettingsRepository.LoadAsync(CancellationToken).ConfigureAwait(false);
             var Instance = LauncherInstance.Create(
                 InstanceId.New(),
                 Request.InstanceName.Trim(),
@@ -117,7 +137,7 @@ public sealed class ImportInstanceUseCase
                 null,
                 TargetDirectory,
                 DateTimeOffset.UtcNow,
-                LaunchProfile.CreateDefault(),
+                LaunchProfile.CreateDefault(runtimeSettings.DefaultMinMemoryMb, runtimeSettings.DefaultMaxMemoryMb),
                 null);
 
             await InstanceRepository.SaveAsync(Instance, CancellationToken).ConfigureAwait(false);
@@ -194,5 +214,14 @@ public sealed class ImportInstanceUseCase
 
             File.Copy(FilePath, DestinationFilePath, Overwrite);
         }
+    }
+
+    private sealed class DefaultLauncherRuntimeSettingsRepository : ILauncherRuntimeSettingsRepository
+    {
+        public Task<LauncherRuntimeSettings> LoadAsync(CancellationToken CancellationToken = default)
+            => Task.FromResult(LauncherRuntimeSettings.CreateDefault());
+
+        public Task SaveAsync(LauncherRuntimeSettings Settings, CancellationToken CancellationToken = default)
+            => Task.CompletedTask;
     }
 }

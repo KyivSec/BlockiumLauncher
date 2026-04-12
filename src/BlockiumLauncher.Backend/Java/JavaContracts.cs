@@ -12,7 +12,18 @@ namespace BlockiumLauncher.Application.Abstractions.Services
 
     public interface IJavaRuntimeResolver
     {
-        Task<Result<string>> ResolveExecutablePathAsync(string MinecraftVersion, CancellationToken CancellationToken);
+        Task<Result<string>> ResolveExecutablePathAsync(
+            string MinecraftVersion,
+            LoaderType loaderType,
+            int? preferredJavaMajor = null,
+            bool skipCompatibilityChecks = false,
+            CancellationToken CancellationToken = default);
+    }
+
+    public interface IManagedJavaRuntimeService
+    {
+        Task<Result<JavaInstallation?>> GetInstalledRuntimeAsync(int javaMajor, CancellationToken cancellationToken);
+        Task<Result<JavaInstallation>> InstallRuntimeAsync(int javaMajor, bool forceReinstall, CancellationToken cancellationToken);
     }
 
     public interface IJavaValidationService

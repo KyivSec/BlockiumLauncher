@@ -1,5 +1,6 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using System.Security.Cryptography;
 using BlockiumLauncher.Application.Abstractions.Instances;
 using BlockiumLauncher.Application.Abstractions.Repositories;
 using BlockiumLauncher.Application.Abstractions.Services;
@@ -63,6 +64,8 @@ public sealed class ImportCatalogModpackRequest
     public CatalogProvider Provider { get; init; } = CatalogProvider.CurseForge;
     public string ProjectId { get; init; } = string.Empty;
     public string? FileId { get; init; }
+    public IReadOnlyList<string> GameVersions { get; init; } = [];
+    public IReadOnlyList<string> Loaders { get; init; } = [];
     public string InstanceName { get; init; } = string.Empty;
     public string? TargetDirectory { get; init; }
     public bool OverwriteIfExists { get; init; }
@@ -70,6 +73,8 @@ public sealed class ImportCatalogModpackRequest
     public string? DownloadsDirectory { get; init; }
     public bool WaitForManualDownloads { get; init; }
     public TimeSpan WaitTimeout { get; init; } = TimeSpan.FromMinutes(30);
+    public IProgress<ModpackImportProgress>? Progress { get; init; }
+    public Func<BlockedModpackFilesPromptRequest, CancellationToken, Task<BlockedModpackFilesPromptResult>>? BlockedFilesPromptAsync { get; init; }
 }
 
 public sealed class ImportCatalogModpackResult
@@ -80,6 +85,7 @@ public sealed class ImportCatalogModpackResult
     public InstanceContentMetadata Metadata { get; init; } = default!;
     public string DownloadsDirectory { get; init; } = string.Empty;
     public IReadOnlyList<PendingManualDownloadFile> PendingManualDownloads { get; init; } = [];
+    public bool WasManualDownloadStepSkipped { get; init; }
     public bool IsCompleted => PendingManualDownloads.Count == 0;
 }
 
@@ -121,6 +127,7 @@ public sealed class ListCatalogFilesUseCase
 public sealed class InstallCatalogContentUseCase
 {
     private readonly IInstanceRepository instanceRepository;
+    private readonly IContentCatalogDetailsService? contentCatalogDetailsService;
     private readonly IContentCatalogFileService contentCatalogFileService;
     private readonly IDownloader downloader;
     private readonly ITempWorkspaceFactory tempWorkspaceFactory;
@@ -132,8 +139,26 @@ public sealed class InstallCatalogContentUseCase
         IDownloader downloader,
         ITempWorkspaceFactory tempWorkspaceFactory,
         IInstanceContentMetadataService instanceContentMetadataService)
+        : this(
+            instanceRepository,
+            contentCatalogDetailsService: null,
+            contentCatalogFileService,
+            downloader,
+            tempWorkspaceFactory,
+            instanceContentMetadataService)
+    {
+    }
+
+    public InstallCatalogContentUseCase(
+        IInstanceRepository instanceRepository,
+        IContentCatalogDetailsService? contentCatalogDetailsService,
+        IContentCatalogFileService contentCatalogFileService,
+        IDownloader downloader,
+        ITempWorkspaceFactory tempWorkspaceFactory,
+        IInstanceContentMetadataService instanceContentMetadataService)
     {
         this.instanceRepository = instanceRepository ?? throw new ArgumentNullException(nameof(instanceRepository));
+        this.contentCatalogDetailsService = contentCatalogDetailsService;
         this.contentCatalogFileService = contentCatalogFileService ?? throw new ArgumentNullException(nameof(contentCatalogFileService));
         this.downloader = downloader ?? throw new ArgumentNullException(nameof(downloader));
         this.tempWorkspaceFactory = tempWorkspaceFactory ?? throw new ArgumentNullException(nameof(tempWorkspaceFactory));
@@ -182,6 +207,22 @@ public sealed class InstallCatalogContentUseCase
             return Result<InstallCatalogContentResult>.Failure(CatalogFileErrors.DownloadUrlMissing);
         }
 
+        string? iconUrl = resolvedFile.IconUrl;
+        if (string.IsNullOrWhiteSpace(iconUrl) && contentCatalogDetailsService is not null)
+        {
+            var detailsResult = await contentCatalogDetailsService.GetProjectDetailsAsync(new CatalogProjectDetailsQuery
+            {
+                Provider = request.Provider,
+                ContentType = request.ContentType,
+                ProjectId = request.ProjectId
+            }, cancellationToken).ConfigureAwait(false);
+
+            if (detailsResult.IsSuccess)
+            {
+                iconUrl = detailsResult.Value.IconUrl;
+            }
+        }
+
         await using var workspace = await tempWorkspaceFactory.CreateAsync("catalog-content", cancellationToken).ConfigureAwait(false);
         var tempPath = workspace.GetPath(Path.Combine("downloads", resolvedFile.FileName));
         var downloadResult = await downloader.DownloadAsync(
@@ -212,7 +253,7 @@ public sealed class InstallCatalogContentUseCase
             instance,
             new Dictionary<string, ContentSourceMetadata>(StringComparer.OrdinalIgnoreCase)
             {
-                [relativePath] = CatalogInstallSupport.BuildSourceMetadata(resolvedFile)
+                [relativePath] = CatalogInstallSupport.BuildSourceMetadata(resolvedFile, iconUrl)
             },
             cancellationToken).ConfigureAwait(false);
 
@@ -230,6 +271,7 @@ public sealed class ImportCatalogModpackUseCase
 {
     private static readonly TimeSpan ManualDownloadPollInterval = TimeSpan.FromSeconds(2);
 
+    private readonly CatalogModpackImportPipeline catalogModpackImportPipeline;
     private readonly IContentCatalogFileService contentCatalogFileService;
     private readonly IDownloader downloader;
     private readonly ITempWorkspaceFactory tempWorkspaceFactory;
@@ -237,9 +279,11 @@ public sealed class ImportCatalogModpackUseCase
     private readonly InstallInstanceUseCase installInstanceUseCase;
     private readonly IInstanceRepository instanceRepository;
     private readonly IInstanceContentMetadataService instanceContentMetadataService;
+    private readonly IInstanceModpackMetadataRepository instanceModpackMetadataRepository;
     private readonly IManualDownloadStateStore manualDownloadStateStore;
 
     public ImportCatalogModpackUseCase(
+        CatalogModpackImportPipeline catalogModpackImportPipeline,
         IContentCatalogFileService contentCatalogFileService,
         IDownloader downloader,
         ITempWorkspaceFactory tempWorkspaceFactory,
@@ -248,7 +292,33 @@ public sealed class ImportCatalogModpackUseCase
         IInstanceRepository instanceRepository,
         IInstanceContentMetadataService instanceContentMetadataService,
         IManualDownloadStateStore manualDownloadStateStore)
+        : this(
+            catalogModpackImportPipeline,
+            contentCatalogFileService,
+            downloader,
+            tempWorkspaceFactory,
+            archiveExtractor,
+            installInstanceUseCase,
+            instanceRepository,
+            instanceContentMetadataService,
+            NullInstanceModpackMetadataRepository.Instance,
+            manualDownloadStateStore)
     {
+    }
+
+    public ImportCatalogModpackUseCase(
+        CatalogModpackImportPipeline catalogModpackImportPipeline,
+        IContentCatalogFileService contentCatalogFileService,
+        IDownloader downloader,
+        ITempWorkspaceFactory tempWorkspaceFactory,
+        IArchiveExtractor archiveExtractor,
+        InstallInstanceUseCase installInstanceUseCase,
+        IInstanceRepository instanceRepository,
+        IInstanceContentMetadataService instanceContentMetadataService,
+        IInstanceModpackMetadataRepository instanceModpackMetadataRepository,
+        IManualDownloadStateStore manualDownloadStateStore)
+    {
+        this.catalogModpackImportPipeline = catalogModpackImportPipeline ?? throw new ArgumentNullException(nameof(catalogModpackImportPipeline));
         this.contentCatalogFileService = contentCatalogFileService ?? throw new ArgumentNullException(nameof(contentCatalogFileService));
         this.downloader = downloader ?? throw new ArgumentNullException(nameof(downloader));
         this.tempWorkspaceFactory = tempWorkspaceFactory ?? throw new ArgumentNullException(nameof(tempWorkspaceFactory));
@@ -256,7 +326,22 @@ public sealed class ImportCatalogModpackUseCase
         this.installInstanceUseCase = installInstanceUseCase ?? throw new ArgumentNullException(nameof(installInstanceUseCase));
         this.instanceRepository = instanceRepository ?? throw new ArgumentNullException(nameof(instanceRepository));
         this.instanceContentMetadataService = instanceContentMetadataService ?? throw new ArgumentNullException(nameof(instanceContentMetadataService));
+        this.instanceModpackMetadataRepository = instanceModpackMetadataRepository ?? throw new ArgumentNullException(nameof(instanceModpackMetadataRepository));
         this.manualDownloadStateStore = manualDownloadStateStore ?? throw new ArgumentNullException(nameof(manualDownloadStateStore));
+    }
+
+    private sealed class NullInstanceModpackMetadataRepository : IInstanceModpackMetadataRepository
+    {
+        public static readonly NullInstanceModpackMetadataRepository Instance = new();
+
+        public Task<InstanceModpackMetadata?> LoadAsync(string installLocation, CancellationToken cancellationToken = default)
+            => Task.FromResult<InstanceModpackMetadata?>(null);
+
+        public Task SaveAsync(string installLocation, InstanceModpackMetadata metadata, CancellationToken cancellationToken = default)
+            => Task.CompletedTask;
+
+        public Task DeleteAsync(string installLocation, CancellationToken cancellationToken = default)
+            => Task.CompletedTask;
     }
 
     public async Task<Result<ImportCatalogModpackResult>> ExecuteAsync(
@@ -270,17 +355,17 @@ public sealed class ImportCatalogModpackUseCase
             return Result<ImportCatalogModpackResult>.Failure(CatalogFileErrors.InvalidRequest);
         }
 
+        request.Progress?.Report(new ModpackImportProgress
+        {
+            Phase = ModpackImportPhase.ResolvingModpack,
+            Title = "Resolving modpack",
+            StatusText = "Resolving the selected modpack file."
+        });
+
         await using var workspace = await tempWorkspaceFactory.CreateAsync("catalog-modpack", cancellationToken).ConfigureAwait(false);
         var downloadsDirectory = CatalogInstallSupport.ResolveDownloadsDirectory(request.DownloadsDirectory);
 
-        var modpackFileResult = await contentCatalogFileService.ResolveFileAsync(new CatalogFileResolutionQuery
-        {
-            Provider = request.Provider,
-            ContentType = CatalogContentType.Modpack,
-            ProjectId = request.ProjectId,
-            FileId = request.FileId
-        }, cancellationToken).ConfigureAwait(false);
-
+        var modpackFileResult = await ResolveModpackFileAsync(request, cancellationToken).ConfigureAwait(false);
         if (modpackFileResult.IsFailure)
         {
             return Result<ImportCatalogModpackResult>.Failure(modpackFileResult.Error);
@@ -292,15 +377,28 @@ public sealed class ImportCatalogModpackUseCase
             return Result<ImportCatalogModpackResult>.Failure(CatalogFileErrors.DownloadUrlMissing);
         }
 
+        request.Progress?.Report(new ModpackImportProgress
+        {
+            Phase = ModpackImportPhase.DownloadingArchive,
+            Title = "Downloading modpack",
+            StatusText = $"Downloading {modpackFile.DisplayName}."
+        });
+
         var archivePath = workspace.GetPath("modpack.zip");
         var archiveDownloadResult = await downloader.DownloadAsync(
             new DownloadRequest(new Uri(modpackFile.DownloadUrl), archivePath, modpackFile.Sha1),
             cancellationToken).ConfigureAwait(false);
-
         if (archiveDownloadResult.IsFailure)
         {
             return Result<ImportCatalogModpackResult>.Failure(archiveDownloadResult.Error);
         }
+
+        request.Progress?.Report(new ModpackImportProgress
+        {
+            Phase = ModpackImportPhase.ExtractingArchive,
+            Title = "Extracting modpack",
+            StatusText = "Reading the modpack manifest and override files."
+        });
 
         var extractRoot = workspace.GetPath("extracted");
         var extractResult = await archiveExtractor.ExtractAsync(archivePath, extractRoot, cancellationToken).ConfigureAwait(false);
@@ -311,16 +409,8 @@ public sealed class ImportCatalogModpackUseCase
 
         var importContextResult = request.Provider switch
         {
-            CatalogProvider.CurseForge => await ImportCurseForgeArchiveAsync(
-                extractRoot,
-                workspace,
-                request,
-                cancellationToken).ConfigureAwait(false),
-            CatalogProvider.Modrinth => await ImportModrinthArchiveAsync(
-                extractRoot,
-                workspace,
-                request,
-                cancellationToken).ConfigureAwait(false),
+            CatalogProvider.CurseForge => await catalogModpackImportPipeline.ImportCurseForgeAsync(extractRoot, request, downloadsDirectory, cancellationToken).ConfigureAwait(false),
+            CatalogProvider.Modrinth => await catalogModpackImportPipeline.ImportModrinthAsync(extractRoot, request, cancellationToken).ConfigureAwait(false),
             _ => Result<CatalogModpackImportContext>.Failure(CatalogFileErrors.ModpackManifestInvalid)
         };
 
@@ -330,63 +420,170 @@ public sealed class ImportCatalogModpackUseCase
         }
 
         var importContext = importContextResult.Value;
-        var instance = importContext.Instance;
-        var metadata = importContext.Metadata;
-        var pendingManualDownloads = importContext.PendingManualDownloads;
-
-        if (pendingManualDownloads.Count > 0)
-        {
-            await manualDownloadStateStore.SaveAsync(
-                instance.InstallLocation,
-                new PendingManualDownloadsState
-                {
-                    Provider = request.Provider,
-                    ModpackProjectId = modpackFile.ProjectId,
-                    ModpackFileId = modpackFile.FileId,
-                    CreatedAtUtc = DateTimeOffset.UtcNow,
-                    Files = pendingManualDownloads
-                },
-                cancellationToken).ConfigureAwait(false);
-
-            if (request.WaitForManualDownloads)
-            {
-                var resumeResult = await ResumePendingManualDownloadsAsync(
-                    instance,
-                    downloadsDirectory,
-                    request.WaitTimeout,
-                    waitForManualDownloads: true,
-                    cancellationToken).ConfigureAwait(false);
-
-                if (resumeResult.IsFailure)
-                {
-                    return Result<ImportCatalogModpackResult>.Failure(resumeResult.Error);
-                }
-
-                return Result<ImportCatalogModpackResult>.Success(new ImportCatalogModpackResult
-                {
-                    Instance = resumeResult.Value.Instance,
-                    File = modpackFile,
-                    InstalledPath = importContext.InstalledPath,
-                    Metadata = await instanceContentMetadataService.GetAsync(instance, reindexIfMissing: true, cancellationToken).ConfigureAwait(false) ?? metadata,
-                    DownloadsDirectory = resumeResult.Value.DownloadsDirectory,
-                    PendingManualDownloads = resumeResult.Value.PendingManualDownloads
-                });
-            }
-        }
-        else
-        {
-            await manualDownloadStateStore.DeleteAsync(instance.InstallLocation, cancellationToken).ConfigureAwait(false);
-        }
+        await instanceModpackMetadataRepository.SaveAsync(
+            importContext.Instance.InstallLocation,
+            BuildInstanceModpackMetadata(importContext.Instance, modpackFile),
+            cancellationToken).ConfigureAwait(false);
 
         return Result<ImportCatalogModpackResult>.Success(new ImportCatalogModpackResult
         {
-            Instance = instance,
+            Instance = importContext.Instance,
             File = modpackFile,
             InstalledPath = importContext.InstalledPath,
-            Metadata = metadata,
+            Metadata = importContext.Metadata,
             DownloadsDirectory = downloadsDirectory,
-            PendingManualDownloads = pendingManualDownloads
+            PendingManualDownloads = importContext.PendingManualDownloads,
+            WasManualDownloadStepSkipped = importContext.WasManualDownloadStepSkipped
         });
+    }
+
+    private async Task<Result<CatalogFileSummary>> ResolveModpackFileAsync(
+        ImportCatalogModpackRequest request,
+        CancellationToken cancellationToken)
+    {
+        var requestedVersions = NormalizeRequestedValues(request.GameVersions);
+        var requestedLoaders = NormalizeRequestedValues(request.Loaders);
+
+        if (!string.IsNullOrWhiteSpace(request.FileId) ||
+            (requestedVersions.Count == 0 && requestedLoaders.Count == 0))
+        {
+            return await contentCatalogFileService.ResolveFileAsync(new CatalogFileResolutionQuery
+            {
+                Provider = request.Provider,
+                ContentType = CatalogContentType.Modpack,
+                ProjectId = request.ProjectId,
+                FileId = request.FileId,
+                GameVersions = requestedVersions,
+                Loaders = requestedLoaders
+            }, cancellationToken).ConfigureAwait(false);
+        }
+
+        var candidateQueries = BuildResolutionQueries(request, requestedVersions, requestedLoaders);
+        var candidates = new Dictionary<string, CatalogFileSummary>(StringComparer.OrdinalIgnoreCase);
+        Error? firstFailure = null;
+
+        foreach (var query in candidateQueries)
+        {
+            var result = await contentCatalogFileService.ResolveFileAsync(query, cancellationToken).ConfigureAwait(false);
+            if (result.IsFailure)
+            {
+                firstFailure ??= result.Error;
+                continue;
+            }
+
+            var file = result.Value;
+            if (string.IsNullOrWhiteSpace(file.FileId))
+            {
+                continue;
+            }
+
+            candidates[file.FileId] = file;
+        }
+
+        if (candidates.Count == 0)
+        {
+            return Result<CatalogFileSummary>.Failure(firstFailure ?? new Error(
+                "Catalog.ModpackVersionNotFound",
+                "No compatible modpack version was found for the selected Minecraft version and loader filters."));
+        }
+
+        var selected = candidates.Values
+            .Where(static file => !file.IsServerPack)
+            .OrderByDescending(file => ScoreResolvedModpackFile(file, requestedVersions, requestedLoaders))
+            .ThenByDescending(static file => file.PublishedAtUtc)
+            .ThenByDescending(static file => file.FileId, StringComparer.OrdinalIgnoreCase)
+            .FirstOrDefault();
+
+        return selected is null
+            ? Result<CatalogFileSummary>.Failure(new Error(
+                "Catalog.ModpackVersionNotFound",
+                "No compatible modpack version was found for the selected Minecraft version and loader filters."))
+            : Result<CatalogFileSummary>.Success(selected);
+    }
+
+    private static IReadOnlyList<CatalogFileResolutionQuery> BuildResolutionQueries(
+        ImportCatalogModpackRequest request,
+        IReadOnlyList<string> requestedVersions,
+        IReadOnlyList<string> requestedLoaders)
+    {
+        var versions = requestedVersions.Count == 0 ? [null] : requestedVersions.Cast<string?>().ToArray();
+        var loaders = requestedLoaders.Count == 0 ? [null] : requestedLoaders.Cast<string?>().ToArray();
+        var queries = new List<CatalogFileResolutionQuery>(versions.Length * loaders.Length);
+
+        foreach (var version in versions)
+        {
+            foreach (var loader in loaders)
+            {
+                queries.Add(new CatalogFileResolutionQuery
+                {
+                    Provider = request.Provider,
+                    ContentType = CatalogContentType.Modpack,
+                    ProjectId = request.ProjectId,
+                    FileId = request.FileId,
+                    GameVersion = version,
+                    GameVersions = requestedVersions,
+                    Loader = loader,
+                    Loaders = requestedLoaders
+                });
+            }
+        }
+
+        return queries;
+    }
+
+    private static IReadOnlyList<string> NormalizeRequestedValues(IReadOnlyList<string>? values)
+    {
+        return values is null
+            ? []
+            : values
+                .Where(static value => !string.IsNullOrWhiteSpace(value))
+                .Select(static value => value.Trim())
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+    }
+
+    private static int ScoreResolvedModpackFile(
+        CatalogFileSummary file,
+        IReadOnlyList<string> requestedVersions,
+        IReadOnlyList<string> requestedLoaders)
+    {
+        var score = 0;
+
+        if (requestedVersions.Count > 0 &&
+            file.GameVersions.Any(version => requestedVersions.Contains(version, StringComparer.OrdinalIgnoreCase)))
+        {
+            score += 4;
+        }
+
+        if (requestedLoaders.Count > 0 &&
+            file.Loaders.Any(loader => requestedLoaders.Contains(loader, StringComparer.OrdinalIgnoreCase)))
+        {
+            score += 2;
+        }
+
+        if (!file.IsServerPack)
+        {
+            score += 1;
+        }
+
+        return score;
+    }
+
+    private static InstanceModpackMetadata BuildInstanceModpackMetadata(LauncherInstance instance, CatalogFileSummary file)
+    {
+        return new InstanceModpackMetadata
+        {
+            Provider = file.Provider,
+            ProjectId = file.ProjectId,
+            FileId = file.FileId,
+            PackName = instance.Name,
+            PackVersionLabel = string.IsNullOrWhiteSpace(file.DisplayName) ? file.FileName : file.DisplayName,
+            ProjectUrl = file.ProjectUrl ?? file.FilePageUrl,
+            MinecraftVersion = instance.GameVersion.ToString(),
+            LoaderType = instance.LoaderType,
+            LoaderVersion = instance.LoaderVersion?.ToString(),
+            InstalledAtUtc = DateTimeOffset.UtcNow
+        };
     }
 
     internal async Task<Result<ResumeCatalogModpackImportResult>> ResumePendingManualDownloadsAsync(
@@ -415,15 +612,32 @@ public sealed class ImportCatalogModpackUseCase
             var remainingFiles = new List<PendingManualDownloadFile>();
             var sources = new Dictionary<string, ContentSourceMetadata>(StringComparer.OrdinalIgnoreCase);
 
+            var matches = PendingManualDownloadMatcher.FindMatches(downloadsDirectory, pendingState.Files)
+                .ToDictionary(static match => string.Join("|", new[]
+                {
+                    match.File.ProjectId,
+                    match.File.FileId,
+                    match.File.FileName,
+                    match.File.DestinationRelativePath
+                }), StringComparer.OrdinalIgnoreCase);
+
             foreach (var pendingFile in pendingState.Files)
             {
-                var downloadedPath = CatalogInstallSupport.TryFindDownloadedFile(downloadsDirectory, pendingFile.FileName, pendingFile.SizeBytes);
-                if (downloadedPath is null)
+                var key = string.Join("|", new[]
+                {
+                    pendingFile.ProjectId,
+                    pendingFile.FileId,
+                    pendingFile.FileName,
+                    pendingFile.DestinationRelativePath
+                });
+
+                if (!matches.TryGetValue(key, out var match))
                 {
                     remainingFiles.Add(pendingFile);
                     continue;
                 }
 
+                var downloadedPath = match.DownloadedPath;
                 var destinationPath = Path.Combine(
                     instance.InstallLocation,
                     pendingFile.DestinationRelativePath.Replace('/', Path.DirectorySeparatorChar));
@@ -558,6 +772,7 @@ public sealed class ImportCatalogModpackUseCase
 
         var sources = new Dictionary<string, ContentSourceMetadata>(StringComparer.OrdinalIgnoreCase);
         var pendingManualDownloads = new List<PendingManualDownloadFile>();
+        var requestedLoader = CatalogInstallSupport.GetLoaderText(loaderType);
         foreach (var fileReference in manifest.Files)
         {
             var fileResult = await contentCatalogFileService.ResolveFileAsync(new CatalogFileResolutionQuery
@@ -574,6 +789,16 @@ public sealed class ImportCatalogModpackUseCase
             }
 
             var file = fileResult.Value;
+            if (file.RequiresManualDownload || string.IsNullOrWhiteSpace(file.DownloadUrl))
+            {
+                file = await CatalogInstallSupport.ResolvePreferredCurseForgeManualFileAsync(
+                    contentCatalogFileService,
+                    file,
+                    manifest.Minecraft.Version,
+                    requestedLoader,
+                    cancellationToken).ConfigureAwait(false);
+            }
+
             var relativePath = CatalogInstallSupport.ResolveInstalledRelativePath(CatalogContentType.Mod, file.FileName);
 
             if (file.RequiresManualDownload || string.IsNullOrWhiteSpace(file.DownloadUrl))
@@ -587,8 +812,9 @@ public sealed class ImportCatalogModpackUseCase
                     DisplayName = file.DisplayName,
                     FileName = file.FileName,
                     DestinationRelativePath = relativePath,
+                    DirectDownloadUrl = CatalogInstallSupport.ResolveManualDownloadUrl(file),
                     ProjectUrl = file.ProjectUrl,
-                    FilePageUrl = file.FilePageUrl ?? file.ProjectUrl,
+                    FilePageUrl = CatalogInstallSupport.ResolveManualDownloadFilePageUrl(file),
                     Sha1 = file.Sha1,
                     SizeBytes = file.SizeBytes
                 });
@@ -827,7 +1053,8 @@ public sealed class ImportCatalogModpackUseCase
         CatalogProvider provider,
         string? projectId,
         string? fileId,
-        string? originalUrl)
+        string? originalUrl,
+        string? iconUrl = null)
     {
         var contentType = relativePath.Replace('\\', '/').TrimStart('/').Split('/', StringSplitOptions.RemoveEmptyEntries) switch
         {
@@ -848,6 +1075,7 @@ public sealed class ImportCatalogModpackUseCase
             ContentType = contentType,
             ProjectId = string.IsNullOrWhiteSpace(projectId) ? null : projectId,
             FileId = string.IsNullOrWhiteSpace(fileId) ? null : fileId,
+            IconUrl = string.IsNullOrWhiteSpace(iconUrl) ? null : iconUrl,
             OriginalUrl = originalUrl,
             AcquiredAtUtc = DateTimeOffset.UtcNow
         };
@@ -906,7 +1134,7 @@ public sealed class ResumeCatalogModpackImportUseCase
 
 internal static class CatalogInstallSupport
 {
-    internal static ContentSourceMetadata BuildSourceMetadata(CatalogFileSummary file)
+    internal static ContentSourceMetadata BuildSourceMetadata(CatalogFileSummary file, string? iconUrlOverride = null)
     {
         return new ContentSourceMetadata
         {
@@ -919,6 +1147,7 @@ internal static class CatalogInstallSupport
             ContentType = ToSourceContentType(file.ContentType),
             ProjectId = file.ProjectId,
             FileId = file.FileId,
+            IconUrl = string.IsNullOrWhiteSpace(iconUrlOverride) ? file.IconUrl : iconUrlOverride,
             OriginalUrl = file.DownloadUrl ?? file.FilePageUrl ?? file.ProjectUrl,
             AcquiredAtUtc = DateTimeOffset.UtcNow
         };
@@ -937,9 +1166,85 @@ internal static class CatalogInstallSupport
             ContentType = ToSourceContentType(file.ContentType),
             ProjectId = file.ProjectId,
             FileId = file.FileId,
-            OriginalUrl = file.FilePageUrl ?? file.ProjectUrl,
+            IconUrl = file.IconUrl,
+            OriginalUrl = file.DirectDownloadUrl ?? file.FilePageUrl ?? file.ProjectUrl,
             AcquiredAtUtc = DateTimeOffset.UtcNow
         };
+    }
+
+    internal static string? ResolveManualDownloadUrl(CatalogFileSummary file)
+    {
+        if (!string.IsNullOrWhiteSpace(file.DownloadUrl))
+        {
+            return file.DownloadUrl;
+        }
+
+        var filePageUrl = ResolveManualDownloadFilePageUrl(file);
+        return TryDeriveCurseForgeDirectDownloadUrl(filePageUrl, file.FileId);
+    }
+
+    internal static async Task<CatalogFileSummary> ResolvePreferredCurseForgeManualFileAsync(
+        IContentCatalogFileService contentCatalogFileService,
+        CatalogFileSummary originalFile,
+        string? modpackGameVersion,
+        string? modpackLoader,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(contentCatalogFileService);
+        ArgumentNullException.ThrowIfNull(originalFile);
+
+        if (originalFile.Provider != CatalogProvider.CurseForge ||
+            string.IsNullOrWhiteSpace(originalFile.ProjectId) ||
+            string.IsNullOrWhiteSpace(modpackGameVersion))
+        {
+            return originalFile;
+        }
+
+        var resolvedResult = await contentCatalogFileService.ResolveFileAsync(new CatalogFileResolutionQuery
+        {
+            Provider = CatalogProvider.CurseForge,
+            ContentType = originalFile.ContentType,
+            ProjectId = originalFile.ProjectId,
+            GameVersion = modpackGameVersion,
+            GameVersions = [modpackGameVersion],
+            Loader = modpackLoader,
+            Loaders = string.IsNullOrWhiteSpace(modpackLoader) ? [] : [modpackLoader]
+        }, cancellationToken).ConfigureAwait(false);
+
+        if (resolvedResult.IsFailure)
+        {
+            return originalFile;
+        }
+
+        var resolvedFile = resolvedResult.Value;
+        if (!resolvedFile.GameVersions.Contains(modpackGameVersion, StringComparer.OrdinalIgnoreCase))
+        {
+            return originalFile;
+        }
+
+        if (!string.IsNullOrWhiteSpace(modpackLoader) &&
+            resolvedFile.Loaders.Count > 0 &&
+            !resolvedFile.Loaders.Contains(modpackLoader, StringComparer.OrdinalIgnoreCase))
+        {
+            return originalFile;
+        }
+
+        return resolvedFile;
+    }
+
+    internal static string? ResolveManualDownloadFilePageUrl(CatalogFileSummary file)
+    {
+        if (!string.IsNullOrWhiteSpace(file.FilePageUrl))
+        {
+            return file.FilePageUrl;
+        }
+
+        if (string.IsNullOrWhiteSpace(file.ProjectUrl) || string.IsNullOrWhiteSpace(file.FileId))
+        {
+            return null;
+        }
+
+        return $"{file.ProjectUrl.TrimEnd('/')}/files/{Uri.EscapeDataString(file.FileId)}";
     }
 
     internal static string ResolveInstalledRelativePath(CatalogContentType contentType, string fileName)
@@ -1013,39 +1318,49 @@ internal static class CatalogInstallSupport
         return Path.Combine(profileDirectory, "Downloads");
     }
 
-    internal static string? TryFindDownloadedFile(string downloadsDirectory, string fileName, long sizeBytes)
+    internal static string? TryDeriveCurseForgeDirectDownloadUrl(string? filePageUrl, string? fileId = null)
     {
-        if (string.IsNullOrWhiteSpace(downloadsDirectory) ||
-            string.IsNullOrWhiteSpace(fileName) ||
-            !Directory.Exists(downloadsDirectory))
+        if (string.IsNullOrWhiteSpace(filePageUrl) ||
+            !Uri.TryCreate(filePageUrl.Trim(), UriKind.Absolute, out var filePageUri))
         {
             return null;
         }
 
-        var exactPath = Path.Combine(downloadsDirectory, fileName);
-        if (IsMatchingDownloadedFile(exactPath, sizeBytes))
+        var path = filePageUri.AbsolutePath.TrimEnd('/');
+        if (path.Contains("/download/", StringComparison.OrdinalIgnoreCase))
         {
-            return exactPath;
+            return filePageUri.GetLeftPart(UriPartial.Path);
         }
 
-        var stem = Path.GetFileNameWithoutExtension(fileName);
-        var extension = Path.GetExtension(fileName);
+        var effectiveFileId = string.IsNullOrWhiteSpace(fileId)
+            ? TryExtractCurseForgeFileId(path)
+            : fileId.Trim();
 
-        foreach (var candidatePath in Directory.EnumerateFiles(downloadsDirectory, $"*{extension}", SearchOption.TopDirectoryOnly))
+        if (string.IsNullOrWhiteSpace(effectiveFileId))
         {
-            var candidateName = Path.GetFileNameWithoutExtension(candidatePath);
-            if (!candidateName.StartsWith(stem, StringComparison.OrdinalIgnoreCase))
-            {
-                continue;
-            }
-
-            if (IsMatchingDownloadedFile(candidatePath, sizeBytes))
-            {
-                return candidatePath;
-            }
+            return null;
         }
 
-        return null;
+        var filesSegment = $"/files/{effectiveFileId}";
+        var filesIndex = path.LastIndexOf(filesSegment, StringComparison.OrdinalIgnoreCase);
+        if (filesIndex < 0)
+        {
+            return null;
+        }
+
+        var builder = new UriBuilder(filePageUri)
+        {
+            Path = $"{path[..filesIndex]}/download/{effectiveFileId}/file",
+            Query = string.Empty,
+            Fragment = string.Empty
+        };
+
+        return builder.Uri.AbsoluteUri;
+    }
+
+    internal static string? TryFindDownloadedFile(string downloadsDirectory, string fileName, long sizeBytes, string? sha1 = null)
+    {
+        return PendingManualDownloadMatcher.TryFindDownloadedFile(downloadsDirectory, fileName, sizeBytes, sha1);
     }
 
     internal static string NormalizeRelativePath(string value)
@@ -1065,35 +1380,22 @@ internal static class CatalogInstallSupport
         };
     }
 
-    private static bool IsMatchingDownloadedFile(string candidatePath, long sizeBytes)
+    private static string? TryExtractCurseForgeFileId(string path)
     {
-        if (!File.Exists(candidatePath))
+        var segments = path
+            .Split('/', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+
+        for (var index = 0; index < segments.Length - 1; index++)
         {
-            return false;
+            if (!segments[index].Equals("files", StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            return segments[index + 1];
         }
 
-        var extension = Path.GetExtension(candidatePath);
-        if (string.Equals(extension, ".crdownload", StringComparison.OrdinalIgnoreCase) ||
-            string.Equals(extension, ".part", StringComparison.OrdinalIgnoreCase) ||
-            string.Equals(extension, ".tmp", StringComparison.OrdinalIgnoreCase))
-        {
-            return false;
-        }
-
-        if (sizeBytes <= 0)
-        {
-            return true;
-        }
-
-        try
-        {
-            var fileInfo = new FileInfo(candidatePath);
-            return fileInfo.Length == sizeBytes;
-        }
-        catch
-        {
-            return false;
-        }
+        return null;
     }
 }
 
@@ -1193,4 +1495,5 @@ internal sealed class CatalogModpackImportContext
     public string InstalledPath { get; init; } = string.Empty;
     public InstanceContentMetadata Metadata { get; init; } = default!;
     public IReadOnlyList<PendingManualDownloadFile> PendingManualDownloads { get; init; } = [];
+    public bool WasManualDownloadStepSkipped { get; init; }
 }

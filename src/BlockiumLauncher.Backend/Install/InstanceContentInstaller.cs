@@ -19,6 +19,7 @@ public sealed class InstanceContentInstaller : IInstanceContentInstaller
     public Task<Result<string>> PrepareAsync(
         InstallPlan plan,
         ITempWorkspace workspace,
+        IProgress<InstallPreparationProgress>? progress = null,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(plan);
@@ -33,7 +34,7 @@ public sealed class InstanceContentInstaller : IInstanceContentInstaller
                     $"No loader runtime preparer is registered for loader type '{plan.LoaderType}'.")));
         }
 
-        return preparer.PrepareAsync(plan, workspace, cancellationToken);
+        return preparer.PrepareAsync(plan, workspace, progress, cancellationToken);
     }
 
     private ILoaderRuntimePreparer? ResolvePreparer(LoaderType loaderType)

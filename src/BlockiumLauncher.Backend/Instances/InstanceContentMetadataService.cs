@@ -55,25 +55,105 @@ public sealed class InstanceContentMetadataService : IInstanceContentMetadataSer
         bool enabled,
         CancellationToken cancellationToken = default)
     {
+        return await SetContentEnabledAsync(instance, InstanceContentCategory.Mods, modReference, enabled, cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task<InstanceContentMetadata> SetContentEnabledAsync(
+        LauncherInstance instance,
+        InstanceContentCategory category,
+        string contentReference,
+        bool enabled,
+        CancellationToken cancellationToken = default)
+    {
         ArgumentNullException.ThrowIfNull(instance);
-        ArgumentException.ThrowIfNullOrWhiteSpace(modReference);
+        ArgumentException.ThrowIfNullOrWhiteSpace(contentReference);
 
         var metadata = await GetAsync(instance, reindexIfMissing: true, cancellationToken).ConfigureAwait(false)
             ?? new InstanceContentMetadata();
 
-        var mod = metadata.Mods.FirstOrDefault(item =>
-            string.Equals(item.RelativePath, modReference, StringComparison.OrdinalIgnoreCase) ||
-            string.Equals(item.Name, modReference, StringComparison.OrdinalIgnoreCase));
+        var item = ResolveContentItems(metadata, category).FirstOrDefault(entry =>
+            string.Equals(entry.RelativePath, contentReference, StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(entry.Name, contentReference, StringComparison.OrdinalIgnoreCase));
 
-        if (mod is null || string.IsNullOrWhiteSpace(mod.AbsolutePath) || !File.Exists(mod.AbsolutePath))
+        if (item is null || string.IsNullOrWhiteSpace(item.AbsolutePath) || !File.Exists(item.AbsolutePath))
         {
-            throw new FileNotFoundException("The requested mod file was not found.", modReference);
+            throw new FileNotFoundException("The requested content file was not found.", contentReference);
         }
 
-        var targetPath = ResolveTargetModPath(mod.AbsolutePath, enabled);
-        if (!string.Equals(mod.AbsolutePath, targetPath, StringComparison.OrdinalIgnoreCase))
+        if (!SupportsDisable(category))
         {
-            File.Move(mod.AbsolutePath, targetPath, overwrite: true);
+            return await ReindexAsync(instance, cancellationToken).ConfigureAwait(false);
+        }
+
+        var targetPath = ResolveTargetContentPath(item.AbsolutePath, enabled);
+        if (!string.Equals(item.AbsolutePath, targetPath, StringComparison.OrdinalIgnoreCase))
+        {
+            File.Move(item.AbsolutePath, targetPath, overwrite: true);
+        }
+
+        var normalizedSources = CollectSources(metadata);
+        if (normalizedSources.Count > 0 &&
+            item.Source is not null)
+        {
+            normalizedSources.Remove(NormalizeRelativePath(item.RelativePath));
+            var targetRelativePath = NormalizeRelativePath(Path.GetRelativePath(instance.InstallLocation, targetPath));
+            normalizedSources[targetRelativePath] = item.Source;
+        }
+
+        var reindexedMetadata = await ReindexAsync(instance, cancellationToken).ConfigureAwait(false);
+        if (normalizedSources.Count == 0)
+        {
+            return reindexedMetadata;
+        }
+
+        var updatedMetadata = new InstanceContentMetadata
+        {
+            IndexedAtUtc = reindexedMetadata.IndexedAtUtc,
+            IconPath = reindexedMetadata.IconPath,
+            TotalPlaytimeSeconds = reindexedMetadata.TotalPlaytimeSeconds,
+            LastLaunchAtUtc = reindexedMetadata.LastLaunchAtUtc,
+            LastLaunchPlaytimeSeconds = reindexedMetadata.LastLaunchPlaytimeSeconds,
+            Mods = ApplySources(reindexedMetadata.Mods, normalizedSources),
+            ResourcePacks = ApplySources(reindexedMetadata.ResourcePacks, normalizedSources),
+            Shaders = ApplySources(reindexedMetadata.Shaders, normalizedSources),
+            Worlds = ApplySources(reindexedMetadata.Worlds, normalizedSources),
+            Screenshots = ApplySources(reindexedMetadata.Screenshots, normalizedSources),
+            Servers = reindexedMetadata.Servers
+        };
+
+        await repository.SaveAsync(instance.InstallLocation, updatedMetadata, cancellationToken).ConfigureAwait(false);
+        return updatedMetadata;
+    }
+
+    public async Task<InstanceContentMetadata> DeleteContentAsync(
+        LauncherInstance instance,
+        InstanceContentCategory category,
+        string contentReference,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(instance);
+        ArgumentException.ThrowIfNullOrWhiteSpace(contentReference);
+
+        var metadata = await GetAsync(instance, reindexIfMissing: true, cancellationToken).ConfigureAwait(false)
+            ?? new InstanceContentMetadata();
+
+        var item = ResolveContentItems(metadata, category).FirstOrDefault(entry =>
+            string.Equals(entry.RelativePath, contentReference, StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(entry.Name, contentReference, StringComparison.OrdinalIgnoreCase));
+
+        if (item is null || string.IsNullOrWhiteSpace(item.AbsolutePath) ||
+            (!File.Exists(item.AbsolutePath) && !Directory.Exists(item.AbsolutePath)))
+        {
+            throw new FileNotFoundException("The requested content file was not found.", contentReference);
+        }
+
+        if (Directory.Exists(item.AbsolutePath))
+        {
+            Directory.Delete(item.AbsolutePath, recursive: true);
+        }
+        else
+        {
+            File.Delete(item.AbsolutePath);
         }
 
         return await ReindexAsync(instance, cancellationToken).ConfigureAwait(false);
@@ -153,7 +233,7 @@ public sealed class InstanceContentMetadataService : IInstanceContentMetadataSer
         return updatedMetadata;
     }
 
-    private static string ResolveTargetModPath(string currentPath, bool enabled)
+    private static string ResolveTargetContentPath(string currentPath, bool enabled)
     {
         if (enabled)
         {
@@ -168,6 +248,26 @@ public sealed class InstanceContentMetadataService : IInstanceContentMetadataSer
         }
 
         return currentPath + ".disabled";
+    }
+
+    private static IReadOnlyList<InstanceFileMetadata> ResolveContentItems(InstanceContentMetadata metadata, InstanceContentCategory category)
+    {
+        return category switch
+        {
+            InstanceContentCategory.Mods => metadata.Mods,
+            InstanceContentCategory.ResourcePacks => metadata.ResourcePacks,
+            InstanceContentCategory.Shaders => metadata.Shaders,
+            InstanceContentCategory.Worlds => metadata.Worlds,
+            InstanceContentCategory.Screenshots => metadata.Screenshots,
+            _ => []
+        };
+    }
+
+    private static bool SupportsDisable(InstanceContentCategory category)
+    {
+        return category is InstanceContentCategory.Mods or
+            InstanceContentCategory.ResourcePacks or
+            InstanceContentCategory.Shaders;
     }
 
     private static IReadOnlyList<InstanceFileMetadata> ApplySources(
@@ -190,10 +290,49 @@ public sealed class InstanceContentMetadataService : IInstanceContentMetadataSer
                     SizeBytes = item.SizeBytes,
                     LastModifiedAtUtc = item.LastModifiedAtUtc,
                     IsDisabled = item.IsDisabled,
+                    IconUrl = string.IsNullOrWhiteSpace(source.IconUrl) ? item.IconUrl : source.IconUrl,
                     Source = source
                 };
             })
             .ToList();
+    }
+
+    private static Dictionary<string, ContentSourceMetadata> CollectSources(InstanceContentMetadata metadata)
+    {
+        return EnumerateSourceEntries(metadata)
+            .Where(static pair => pair.Source is not null)
+            .ToDictionary(
+                static pair => NormalizeRelativePath(pair.RelativePath),
+                static pair => pair.Source!,
+                StringComparer.OrdinalIgnoreCase);
+    }
+
+    private static IEnumerable<(string RelativePath, ContentSourceMetadata? Source)> EnumerateSourceEntries(InstanceContentMetadata metadata)
+    {
+        foreach (var item in metadata.Mods)
+        {
+            yield return (item.RelativePath, item.Source);
+        }
+
+        foreach (var item in metadata.ResourcePacks)
+        {
+            yield return (item.RelativePath, item.Source);
+        }
+
+        foreach (var item in metadata.Shaders)
+        {
+            yield return (item.RelativePath, item.Source);
+        }
+
+        foreach (var item in metadata.Worlds)
+        {
+            yield return (item.RelativePath, item.Source);
+        }
+
+        foreach (var item in metadata.Screenshots)
+        {
+            yield return (item.RelativePath, item.Source);
+        }
     }
 
     private static string NormalizeRelativePath(string value)

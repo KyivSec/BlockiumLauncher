@@ -15,6 +15,15 @@ public sealed class ListInstanceBrowserSummariesUseCaseTests
     [Fact]
     public async Task ExecuteAsync_ReturnsBrowserSummariesFromRepositoryAndMetadata()
     {
+        var metadataIconPath = Path.Combine(Path.GetTempPath(), "BlockiumLauncher.Tests", Path.GetRandomFileName() + ".png");
+        var metadataIconDirectory = Path.GetDirectoryName(metadataIconPath);
+        if (!string.IsNullOrWhiteSpace(metadataIconDirectory))
+        {
+            Directory.CreateDirectory(metadataIconDirectory);
+        }
+
+        await File.WriteAllTextAsync(metadataIconPath, "icon");
+
         var installed = LauncherInstance.Create(
             InstanceId.New(),
             "Adventure Pack",
@@ -45,7 +54,7 @@ public sealed class ListInstanceBrowserSummariesUseCaseTests
                 installed.InstallLocation,
                 new InstanceContentMetadata
                 {
-                    IconPath = @"C:\Metadata\adventure.png",
+                    IconPath = metadataIconPath,
                     TotalPlaytimeSeconds = 7200,
                     LastLaunchAtUtc = DateTimeOffset.UtcNow.AddDays(-1)
                 }));
@@ -59,7 +68,7 @@ public sealed class ListInstanceBrowserSummariesUseCaseTests
         Assert.Equal("1.21.1", summary.GameVersion);
         Assert.Equal(LoaderType.Fabric, summary.LoaderType);
         Assert.Equal(7200, summary.TotalPlaytimeSeconds);
-        Assert.Equal(@"C:\Metadata\adventure.png", summary.IconPath);
+        Assert.Equal(metadataIconPath, summary.IconPath);
     }
 
     private sealed class FakeInstanceRepository : IInstanceRepository
@@ -103,6 +112,12 @@ public sealed class ListInstanceBrowserSummariesUseCaseTests
             => Task.FromResult(metadata);
 
         public Task<InstanceContentMetadata> SetModEnabledAsync(LauncherInstance instance, string modReference, bool enabled, CancellationToken cancellationToken = default)
+            => Task.FromResult(metadata);
+
+        public Task<InstanceContentMetadata> SetContentEnabledAsync(LauncherInstance instance, InstanceContentCategory category, string contentReference, bool enabled, CancellationToken cancellationToken = default)
+            => Task.FromResult(metadata);
+
+        public Task<InstanceContentMetadata> DeleteContentAsync(LauncherInstance instance, InstanceContentCategory category, string contentReference, CancellationToken cancellationToken = default)
             => Task.FromResult(metadata);
 
         public Task<InstanceContentMetadata> RecordLaunchAsync(LauncherInstance instance, DateTimeOffset startedAtUtc, DateTimeOffset exitedAtUtc, CancellationToken cancellationToken = default)

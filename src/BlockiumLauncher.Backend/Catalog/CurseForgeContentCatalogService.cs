@@ -1,6 +1,8 @@
 using System.Net;
 using System.Net.Http.Headers;
+using System.Text;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using BlockiumLauncher.Application.Abstractions.Services;
 using BlockiumLauncher.Application.UseCases.Common;
 using BlockiumLauncher.Backend.Catalog;
@@ -96,6 +98,9 @@ public sealed class CurseForgeContentCatalogService : IContentCatalogProvider, I
 
             foreach (var item in dataElement.EnumerateArray())
             {
+                var categories = GetCategoryNames(item);
+                var gameVersions = GetGameVersions(item);
+                var loaders = GetLoaders(item);
                 var summary = new CatalogProjectSummary
                 {
                     Provider = CatalogProvider.CurseForge,
@@ -111,12 +116,12 @@ public sealed class CurseForgeContentCatalogService : IContentCatalogProvider, I
                     UpdatedAtUtc = GetDateTimeOffset(item, "dateModified"),
                     IconUrl = GetNestedString(item, "logo", "url"),
                     ProjectUrl = GetNestedString(item, "links", "websiteUrl"),
-                    Categories = GetCategoryNames(item),
-                    GameVersions = GetGameVersions(item),
-                    Loaders = GetLoaders(item)
+                    Categories = TrimSummaryCategories(categories),
+                    GameVersions = TrimSummaryGameVersions(gameVersions),
+                    Loaders = TrimSummaryLoaders(loaders)
                 };
 
-                if (!MatchesRequestedFilters(summary, requestedGameVersions, requestedLoaders, query.Categories))
+                if (!MatchesRequestedFilters(categories, gameVersions, loaders, query.Categories, requestedGameVersions, requestedLoaders))
                 {
                     continue;
                 }
@@ -143,15 +148,24 @@ public sealed class CurseForgeContentCatalogService : IContentCatalogProvider, I
             return Result<CatalogProjectDetails>.Failure(apiKeyResult.Error);
         }
 
-        var projectResponse = await GetStringAsync(new Uri(MetadataEndpoints.CurseForgeMod(query.ProjectId)), apiKeyResult.Value, cancellationToken)
-            .ConfigureAwait(false);
+        var projectResponseTask = GetStringAsync(
+            new Uri(MetadataEndpoints.CurseForgeMod(query.ProjectId)),
+            apiKeyResult.Value,
+            cancellationToken);
+        var descriptionResponseTask = GetStringAsync(
+            new Uri(MetadataEndpoints.CurseForgeModDescription(query.ProjectId)),
+            apiKeyResult.Value,
+            cancellationToken);
+
+        await Task.WhenAll(projectResponseTask, descriptionResponseTask).ConfigureAwait(false);
+
+        var projectResponse = await projectResponseTask.ConfigureAwait(false);
+        var descriptionResponse = await descriptionResponseTask.ConfigureAwait(false);
         if (projectResponse.IsFailure)
         {
             return Result<CatalogProjectDetails>.Failure(projectResponse.Error);
         }
 
-        var descriptionResponse = await GetStringAsync(new Uri(MetadataEndpoints.CurseForgeModDescription(query.ProjectId)), apiKeyResult.Value, cancellationToken)
-            .ConfigureAwait(false);
         if (descriptionResponse.IsFailure)
         {
             return Result<CatalogProjectDetails>.Failure(descriptionResponse.Error);
@@ -170,6 +184,7 @@ public sealed class CurseForgeContentCatalogService : IContentCatalogProvider, I
             }
 
             var descriptionHtml = GetString(descriptionDocument.RootElement, "data");
+            var descriptionText = SimplifyDescriptionHtml(descriptionHtml);
 
             return Result<CatalogProjectDetails>.Success(new CatalogProjectDetails
             {
@@ -186,8 +201,8 @@ public sealed class CurseForgeContentCatalogService : IContentCatalogProvider, I
                 UpdatedAtUtc = GetDateTimeOffset(projectElement, "dateModified"),
                 IconUrl = GetNestedString(projectElement, "logo", "url"),
                 ProjectUrl = GetNestedString(projectElement, "links", "websiteUrl"),
-                DescriptionFormat = CatalogDescriptionFormat.Html,
-                DescriptionContent = descriptionHtml,
+                DescriptionFormat = CatalogDescriptionFormat.PlainText,
+                DescriptionContent = string.IsNullOrWhiteSpace(descriptionText) ? GetString(projectElement, "summary") : descriptionText,
                 Categories = GetCategoryNames(projectElement),
                 GameVersions = GetGameVersions(projectElement),
                 Loaders = GetLoaders(projectElement)
@@ -312,6 +327,147 @@ public sealed class CurseForgeContentCatalogService : IContentCatalogProvider, I
         }
     }
 
+    public async Task<Result<IReadOnlyDictionary<string, CatalogFileSummary>>> GetFilesByIdsAsync(
+        IReadOnlyDictionary<string, string> projectIdsByFileId,
+        CatalogContentType contentType,
+        CancellationToken cancellationToken = default)
+    {
+        var apiKeyResult = ResolveApiKey();
+        if (apiKeyResult.IsFailure)
+        {
+            return Result<IReadOnlyDictionary<string, CatalogFileSummary>>.Failure(apiKeyResult.Error);
+        }
+
+        var numericFileIds = projectIdsByFileId.Keys
+            .Where(static value => !string.IsNullOrWhiteSpace(value))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Select(long.Parse)
+            .ToArray();
+
+        if (numericFileIds.Length == 0)
+        {
+            return Result<IReadOnlyDictionary<string, CatalogFileSummary>>.Success(new Dictionary<string, CatalogFileSummary>(StringComparer.OrdinalIgnoreCase));
+        }
+
+        var response = await PostStringAsync(
+            new Uri(MetadataEndpoints.CurseForgeFiles),
+            new { fileIds = numericFileIds },
+            apiKeyResult.Value,
+            cancellationToken).ConfigureAwait(false);
+        if (response.IsFailure)
+        {
+            return Result<IReadOnlyDictionary<string, CatalogFileSummary>>.Failure(response.Error);
+        }
+
+        try
+        {
+            using var document = JsonDocument.Parse(response.Value);
+            if (!document.RootElement.TryGetProperty("data", out var dataElement) ||
+                dataElement.ValueKind != JsonValueKind.Array)
+            {
+                return Result<IReadOnlyDictionary<string, CatalogFileSummary>>.Failure(
+                    MetadataErrors.InvalidPayload("CurseForge file batch response did not contain a valid data array."));
+            }
+
+            var files = new Dictionary<string, CatalogFileSummary>(StringComparer.OrdinalIgnoreCase);
+            foreach (var item in dataElement.EnumerateArray())
+            {
+                var fileId = GetInt64(item, "id").ToString();
+                if (string.IsNullOrWhiteSpace(fileId))
+                {
+                    continue;
+                }
+
+                var projectId = GetInt64(item, "modId").ToString();
+                if (string.IsNullOrWhiteSpace(projectId) &&
+                    !projectIdsByFileId.TryGetValue(fileId, out projectId))
+                {
+                    continue;
+                }
+
+                var summary = MapFileSummary(item, projectId, contentType);
+                files[fileId] = CloneFileSummary(
+                    summary,
+                    downloadUrl: summary.DownloadUrl,
+                    requiresManualDownload: string.IsNullOrWhiteSpace(summary.DownloadUrl),
+                    projectUrl: null,
+                    filePageUrl: null);
+            }
+
+            return Result<IReadOnlyDictionary<string, CatalogFileSummary>>.Success(files);
+        }
+        catch (JsonException exception)
+        {
+            return Result<IReadOnlyDictionary<string, CatalogFileSummary>>.Failure(
+                MetadataErrors.InvalidPayload("Failed to parse the CurseForge file batch response.", exception.Message));
+        }
+    }
+
+    public async Task<Result<IReadOnlyDictionary<string, CurseForgeProjectMetadata>>> GetProjectsByIdsAsync(
+        IReadOnlyList<string> projectIds,
+        CancellationToken cancellationToken = default)
+    {
+        var apiKeyResult = ResolveApiKey();
+        if (apiKeyResult.IsFailure)
+        {
+            return Result<IReadOnlyDictionary<string, CurseForgeProjectMetadata>>.Failure(apiKeyResult.Error);
+        }
+
+        var numericProjectIds = projectIds
+            .Where(static value => !string.IsNullOrWhiteSpace(value))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Select(long.Parse)
+            .ToArray();
+        if (numericProjectIds.Length == 0)
+        {
+            return Result<IReadOnlyDictionary<string, CurseForgeProjectMetadata>>.Success(new Dictionary<string, CurseForgeProjectMetadata>(StringComparer.OrdinalIgnoreCase));
+        }
+
+        var response = await PostStringAsync(
+            new Uri(MetadataEndpoints.CurseForgeMods),
+            new { modIds = numericProjectIds },
+            apiKeyResult.Value,
+            cancellationToken).ConfigureAwait(false);
+        if (response.IsFailure)
+        {
+            return Result<IReadOnlyDictionary<string, CurseForgeProjectMetadata>>.Failure(response.Error);
+        }
+
+        try
+        {
+            using var document = JsonDocument.Parse(response.Value);
+            if (!document.RootElement.TryGetProperty("data", out var dataElement) ||
+                dataElement.ValueKind != JsonValueKind.Array)
+            {
+                return Result<IReadOnlyDictionary<string, CurseForgeProjectMetadata>>.Failure(
+                    MetadataErrors.InvalidPayload("CurseForge project batch response did not contain a valid data array."));
+            }
+
+            var projects = new Dictionary<string, CurseForgeProjectMetadata>(StringComparer.OrdinalIgnoreCase);
+            foreach (var item in dataElement.EnumerateArray())
+            {
+                var projectId = GetInt64(item, "id").ToString();
+                if (string.IsNullOrWhiteSpace(projectId))
+                {
+                    continue;
+                }
+
+                projects[projectId] = new CurseForgeProjectMetadata(
+                    projectId,
+                    GetString(item, "name"),
+                    GetNestedString(item, "logo", "url"),
+                    GetNestedString(item, "links", "websiteUrl"));
+            }
+
+            return Result<IReadOnlyDictionary<string, CurseForgeProjectMetadata>>.Success(projects);
+        }
+        catch (JsonException exception)
+        {
+            return Result<IReadOnlyDictionary<string, CurseForgeProjectMetadata>>.Failure(
+                MetadataErrors.InvalidPayload("Failed to parse the CurseForge project batch response.", exception.Message));
+        }
+    }
+
     public async Task<Result<CatalogFileSummary>> ResolveFileAsync(
         CatalogFileResolutionQuery query,
         CancellationToken cancellationToken = default)
@@ -339,6 +495,9 @@ public sealed class CurseForgeContentCatalogService : IContentCatalogProvider, I
             return await GetFileByIdAsync(query, apiKeyResult.Value, cancellationToken).ConfigureAwait(false);
         }
 
+        var requestedGameVersions = MergeRequestedValues(query.GameVersions, query.GameVersion);
+        var requestedLoaders = MergeRequestedValues(query.Loaders, query.Loader);
+
         var listResult = await GetFilesAsync(new CatalogFileQuery
         {
             Provider = query.Provider,
@@ -355,9 +514,16 @@ public sealed class CurseForgeContentCatalogService : IContentCatalogProvider, I
             return Result<CatalogFileSummary>.Failure(listResult.Error);
         }
 
-        var candidate = listResult.Value
-            .Where(static item => !item.IsServerPack)
-            .OrderByDescending(item => ScoreFile(item, query.GameVersion, query.Loader))
+        var candidatePool = listResult.Value
+            .Where(static item => !item.IsServerPack);
+
+        if (requestedGameVersions.Count > 0 || requestedLoaders.Count > 0)
+        {
+            candidatePool = candidatePool.Where(item => MatchesRequestedFileFilters(item, requestedGameVersions, requestedLoaders));
+        }
+
+        var candidate = candidatePool
+            .OrderByDescending(item => ScoreFile(item, requestedGameVersions, requestedLoaders))
             .ThenByDescending(item => item.PublishedAtUtc)
             .ThenByDescending(item => item.FileId, StringComparer.OrdinalIgnoreCase)
             .FirstOrDefault();
@@ -375,6 +541,81 @@ public sealed class CurseForgeContentCatalogService : IContentCatalogProvider, I
         }
 
         return downloadUrlResult;
+    }
+
+    public async Task<Result<CatalogFileDetails>> GetFileDetailsAsync(
+        CatalogFileDetailsQuery query,
+        CancellationToken cancellationToken = default)
+    {
+        var apiKeyResult = ResolveApiKey();
+        if (apiKeyResult.IsFailure)
+        {
+            return Result<CatalogFileDetails>.Failure(apiKeyResult.Error);
+        }
+
+        if (query is null ||
+            string.IsNullOrWhiteSpace(query.ProjectId) ||
+            string.IsNullOrWhiteSpace(query.FileId))
+        {
+            return Result<CatalogFileDetails>.Failure(
+                new Error("Catalog.InvalidRequest", "A valid CurseForge project id and file id are required."));
+        }
+
+        var fileResponseTask = GetStringAsync(
+            new Uri(MetadataEndpoints.CurseForgeModFile(query.ProjectId, query.FileId)),
+            apiKeyResult.Value,
+            cancellationToken);
+        var changelogResponseTask = GetStringAsync(
+            new Uri(MetadataEndpoints.CurseForgeModFileChangelog(query.ProjectId, query.FileId)),
+            apiKeyResult.Value,
+            cancellationToken);
+
+        await Task.WhenAll(fileResponseTask, changelogResponseTask).ConfigureAwait(false);
+
+        var fileResponse = await fileResponseTask.ConfigureAwait(false);
+        var changelogResponse = await changelogResponseTask.ConfigureAwait(false);
+        if (fileResponse.IsFailure)
+        {
+            return Result<CatalogFileDetails>.Failure(fileResponse.Error);
+        }
+
+        if (changelogResponse.IsFailure)
+        {
+            return Result<CatalogFileDetails>.Failure(changelogResponse.Error);
+        }
+
+        try
+        {
+            using var fileDocument = JsonDocument.Parse(fileResponse.Value);
+            using var changelogDocument = JsonDocument.Parse(changelogResponse.Value);
+
+            if (!fileDocument.RootElement.TryGetProperty("data", out var fileElement) ||
+                fileElement.ValueKind != JsonValueKind.Object)
+            {
+                return Result<CatalogFileDetails>.Failure(
+                    MetadataErrors.InvalidPayload("CurseForge file response did not contain a valid data object."));
+            }
+
+            var changelogHtml = GetString(changelogDocument.RootElement, "data");
+            var fileId = GetInt64(fileElement, "id").ToString();
+            return Result<CatalogFileDetails>.Success(new CatalogFileDetails
+            {
+                Provider = CatalogProvider.CurseForge,
+                ContentType = query.ContentType,
+                ProjectId = query.ProjectId,
+                FileId = fileId,
+                DisplayName = GetString(fileElement, "displayName"),
+                ProjectUrl = null,
+                FilePageUrl = BuildFilePageUrl(GetNestedString(fileElement, "links", "websiteUrl"), fileId),
+                PublishedAtUtc = GetDateTimeOffset(fileElement, "fileDate"),
+                ChangelogText = string.IsNullOrWhiteSpace(changelogHtml) ? string.Empty : SimplifyDescriptionHtml(changelogHtml)
+            });
+        }
+        catch (JsonException exception)
+        {
+            return Result<CatalogFileDetails>.Failure(
+                MetadataErrors.InvalidPayload("Failed to parse the CurseForge file details response.", exception.Message));
+        }
     }
 
     private async Task<Result<int>> ResolveClassIdAsync(CatalogContentType contentType, string apiKey, CancellationToken cancellationToken)
@@ -587,30 +828,61 @@ public sealed class CurseForgeContentCatalogService : IContentCatalogProvider, I
     }
 
     private static bool MatchesRequestedFilters(
-        CatalogProjectSummary summary,
+        IReadOnlyList<string> categories,
+        IReadOnlyList<string> gameVersions,
+        IReadOnlyList<string> loaders,
+        IReadOnlyList<string> requestedCategories,
         IReadOnlyList<string> requestedGameVersions,
-        IReadOnlyList<string> requestedLoaders,
-        IReadOnlyList<string> requestedCategories)
+        IReadOnlyList<string> requestedLoaders)
     {
         if (requestedGameVersions.Count > 0 &&
-            !summary.GameVersions.Any(version => requestedGameVersions.Contains(version, StringComparer.OrdinalIgnoreCase)))
+            !gameVersions.Any(version => requestedGameVersions.Contains(version, StringComparer.OrdinalIgnoreCase)))
         {
             return false;
         }
 
         if (requestedLoaders.Count > 0 &&
-            !summary.Loaders.Any(loader => requestedLoaders.Contains(loader, StringComparer.OrdinalIgnoreCase)))
+            !loaders.Any(loader => requestedLoaders.Contains(loader, StringComparer.OrdinalIgnoreCase)))
         {
             return false;
         }
 
         if (requestedCategories.Count > 0 &&
-            !summary.Categories.Any(category => requestedCategories.Contains(category, StringComparer.OrdinalIgnoreCase)))
+            !categories.Any(category => requestedCategories.Contains(category, StringComparer.OrdinalIgnoreCase)))
         {
             return false;
         }
 
         return true;
+    }
+
+    private static IReadOnlyList<string> TrimSummaryCategories(IReadOnlyList<string> categories)
+    {
+        return [];
+    }
+
+    private static IReadOnlyList<string> TrimSummaryLoaders(IReadOnlyList<string> loaders)
+    {
+        return loaders
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Take(2)
+            .ToArray();
+    }
+
+    private static IReadOnlyList<string> TrimSummaryGameVersions(IReadOnlyList<string> gameVersions)
+    {
+        var releaseVersions = gameVersions
+            .Where(static version => Regex.IsMatch(version, "^\\d+\\.\\d+(\\.\\d+)?$", RegexOptions.CultureInvariant))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Take(2)
+            .ToArray();
+
+        return releaseVersions.Length > 0
+            ? releaseVersions
+            : gameVersions
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .Take(2)
+                .ToArray();
     }
 
     private static Uri BuildFilesUri(CatalogFileQuery query)
@@ -853,18 +1125,41 @@ public sealed class CurseForgeContentCatalogService : IContentCatalogProvider, I
         };
     }
 
-    private static int ScoreFile(CatalogFileSummary item, string? requestedGameVersion, string? requestedLoader)
+    private static bool MatchesRequestedFileFilters(
+        CatalogFileSummary item,
+        IReadOnlyList<string> requestedGameVersions,
+        IReadOnlyList<string> requestedLoaders)
+    {
+        if (requestedGameVersions.Count > 0 &&
+            !item.GameVersions.Any(version => requestedGameVersions.Contains(version, StringComparer.OrdinalIgnoreCase)))
+        {
+            return false;
+        }
+
+        if (requestedLoaders.Count > 0 &&
+            !item.Loaders.Any(loader => requestedLoaders.Contains(loader, StringComparer.OrdinalIgnoreCase)))
+        {
+            return false;
+        }
+
+        return true;
+    }
+
+    private static int ScoreFile(
+        CatalogFileSummary item,
+        IReadOnlyList<string> requestedGameVersions,
+        IReadOnlyList<string> requestedLoaders)
     {
         var score = 0;
 
-        if (!string.IsNullOrWhiteSpace(requestedGameVersion) &&
-            item.GameVersions.Contains(requestedGameVersion.Trim(), StringComparer.OrdinalIgnoreCase))
+        if (requestedGameVersions.Count > 0 &&
+            item.GameVersions.Any(version => requestedGameVersions.Contains(version, StringComparer.OrdinalIgnoreCase)))
         {
             score += 4;
         }
 
-        if (!string.IsNullOrWhiteSpace(requestedLoader) &&
-            item.Loaders.Contains(requestedLoader.Trim(), StringComparer.OrdinalIgnoreCase))
+        if (requestedLoaders.Count > 0 &&
+            item.Loaders.Any(loader => requestedLoaders.Contains(loader, StringComparer.OrdinalIgnoreCase)))
         {
             score += 2;
         }
@@ -881,6 +1176,36 @@ public sealed class CurseForgeContentCatalogService : IContentCatalogProvider, I
     {
         using var request = new HttpRequestMessage(HttpMethod.Get, uri);
         request.Headers.Add("x-api-key", apiKey);
+
+        try
+        {
+            using var response = await httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken).ConfigureAwait(false);
+            var content = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+
+            if (response.IsSuccessStatusCode)
+            {
+                return Result<string>.Success(content);
+            }
+
+            return Result<string>.Failure(MetadataErrors.HttpFailed(
+                $"CurseForge request failed with status code {(int)response.StatusCode}.",
+                content));
+        }
+        catch (TaskCanceledException exception) when (!cancellationToken.IsCancellationRequested)
+        {
+            return Result<string>.Failure(MetadataErrors.Timeout("CurseForge request timed out.", exception.Message));
+        }
+        catch (Exception exception)
+        {
+            return Result<string>.Failure(MetadataErrors.HttpFailed("CurseForge request failed.", exception.Message));
+        }
+    }
+
+    private async Task<Result<string>> PostStringAsync(Uri uri, object payload, string apiKey, CancellationToken cancellationToken)
+    {
+        using var request = new HttpRequestMessage(HttpMethod.Post, uri);
+        request.Headers.Add("x-api-key", apiKey);
+        request.Content = new StringContent(JsonSerializer.Serialize(payload), Encoding.UTF8, "application/json");
 
         try
         {
@@ -1131,4 +1456,38 @@ public sealed class CurseForgeContentCatalogService : IContentCatalogProvider, I
 
         return DateTimeOffset.TryParse(property.GetString(), out var value) ? value : null;
     }
+
+    private static string SimplifyDescriptionHtml(string? html)
+    {
+        if (string.IsNullOrWhiteSpace(html))
+        {
+            return string.Empty;
+        }
+
+        var normalized = html;
+        normalized = Regex.Replace(normalized, "<(script|style|iframe|object|embed)[^>]*>.*?</\\1>", string.Empty, RegexOptions.IgnoreCase | RegexOptions.Singleline);
+        normalized = Regex.Replace(normalized, "<li[^>]*>", "- ", RegexOptions.IgnoreCase);
+        normalized = Regex.Replace(normalized, "<br\\s*/?>", "\n", RegexOptions.IgnoreCase);
+        normalized = Regex.Replace(normalized, "</(p|div|section|article|aside|header|footer|figure|figcaption|blockquote|pre|ul|ol|table|tr|h1|h2|h3|h4|h5|h6)>", "\n\n", RegexOptions.IgnoreCase);
+        normalized = Regex.Replace(normalized, "</(td|th)>", "\t", RegexOptions.IgnoreCase);
+        normalized = Regex.Replace(normalized, "<img[^>]*alt=[\"']([^\"']+)[\"'][^>]*>", "[Image: $1]", RegexOptions.IgnoreCase);
+        normalized = Regex.Replace(normalized, "<img[^>]*>", "[Image]", RegexOptions.IgnoreCase);
+        normalized = Regex.Replace(normalized, "<[^>]+>", string.Empty, RegexOptions.Singleline);
+        normalized = WebUtility.HtmlDecode(normalized);
+        normalized = normalized.Replace("\r", string.Empty, StringComparison.Ordinal);
+        normalized = Regex.Replace(normalized, @"\n{3,}", "\n\n");
+
+        var lines = normalized
+            .Split('\n')
+            .Select(static line => line.TrimEnd())
+            .ToArray();
+
+        return string.Join('\n', lines).Trim();
+    }
 }
+
+public sealed record CurseForgeProjectMetadata(
+    string ProjectId,
+    string Title,
+    string? IconUrl,
+    string? WebsiteUrl);

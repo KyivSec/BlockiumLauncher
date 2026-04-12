@@ -35,7 +35,12 @@ public sealed class JavaRequirementResolver : IJavaRequirementResolver
 
         if (releaseMajor == 1 && releaseMinor == 17)
         {
-            return 16;
+            return 17;
+        }
+
+        if (releaseMajor == 1 && (releaseMinor > 20 || (releaseMinor == 20 && GetReleasePatch(gameVersion) >= 5)))
+        {
+            return 21;
         }
 
         if (releaseMajor >= 1 && releaseMinor >= 18)
@@ -103,5 +108,18 @@ public sealed class JavaRequirementResolver : IJavaRequirementResolver
 
         releaseMinor = 0;
         return true;
+    }
+
+    private static int GetReleasePatch(string version)
+    {
+        var parts = version.Split('.', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        if (parts.Length < 3)
+        {
+            return 0;
+        }
+
+        return int.TryParse(parts[2], NumberStyles.Integer, CultureInfo.InvariantCulture, out var patch)
+            ? patch
+            : 0;
     }
 }

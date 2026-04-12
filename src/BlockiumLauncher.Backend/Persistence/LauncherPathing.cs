@@ -258,6 +258,11 @@ public sealed class LauncherPaths : ILauncherPaths
         return Path.Combine(GetInstanceDataDirectory(installLocation), "instance-metadata.json");
     }
 
+    public string GetInstanceModpackMetadataFilePath(string installLocation)
+    {
+        return Path.Combine(GetInstanceDataDirectory(installLocation), "modpack-metadata.json");
+    }
+
     public string GetContextLogFilePath(string context, DateTimeOffset? timestampUtc = null)
     {
         var effectiveTimestamp = timestampUtc ?? DateTimeOffset.UtcNow;

@@ -46,6 +46,22 @@ public sealed class InstallPlanBuilderTests
         Assert.NotEmpty(Result.Value.Steps);
     }
 
+    [Fact]
+    public async Task BuildAsync_AutoResolvesLoaderVersion_WhenItIsMissing()
+    {
+        var Builder = new InstallPlanBuilder(new FakeVersionManifestService(), new FakeLoaderMetadataService(), new FakeLauncherPaths());
+
+        var Result = await Builder.BuildAsync(new InstallInstanceRequest
+        {
+            InstanceName = "Fabric Pack",
+            GameVersion = "1.20.1",
+            LoaderType = LoaderType.Fabric
+        });
+
+        Assert.True(Result.IsSuccess);
+        Assert.Equal("0.15.0", Result.Value.LoaderVersion);
+    }
+
     private sealed class FakeVersionManifestService : IVersionManifestService
     {
         public Task<Result<IReadOnlyList<VersionSummary>>> GetAvailableVersionsAsync(CancellationToken CancellationToken = default)
@@ -105,6 +121,7 @@ public sealed class InstallPlanBuilderTests
         public string GetDefaultInstanceDirectory(string instanceName) => Path.Combine(InstancesDirectory, instanceName);
         public string GetInstanceDataDirectory(string installLocation) => Path.Combine(installLocation, ".blockium");
         public string GetInstanceMetadataFilePath(string installLocation) => Path.Combine(GetInstanceDataDirectory(installLocation), "instance-metadata.json");
+        public string GetInstanceModpackMetadataFilePath(string installLocation) => Path.Combine(GetInstanceDataDirectory(installLocation), "modpack-metadata.json");
         public string GetContextLogFilePath(string context, DateTimeOffset? timestampUtc = null) => Path.Combine(LogsDirectory, $"{context}_{(timestampUtc ?? DateTimeOffset.UtcNow):yyyyMMdd}.log");
     }
 

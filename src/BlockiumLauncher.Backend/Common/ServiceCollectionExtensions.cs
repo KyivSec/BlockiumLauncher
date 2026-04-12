@@ -1,4 +1,4 @@
-﻿using BlockiumLauncher.Application.Abstractions.Auth;
+using BlockiumLauncher.Application.Abstractions.Auth;
 using BlockiumLauncher.Application.Abstractions.Diagnostics;
 using BlockiumLauncher.Application.Abstractions.Launch;
 using BlockiumLauncher.Application.Abstractions.Repositories;
@@ -52,6 +52,8 @@ public static class ServiceCollectionExtensions
         Services.AddSingleton<CompositeContentCatalogDetailsService>();
         Services.AddSingleton<CompositeContentCatalogMetadataService>();
         Services.AddSingleton<CompositeContentCatalogFileService>();
+        Services.AddSingleton<CurseForgeModpackPreflightService>();
+        Services.AddTransient<CatalogModpackImportPipeline>();
         Services.AddSingleton<FabricMetadataClient>();
         Services.AddSingleton<QuiltMetadataClient>();
         Services.AddSingleton<ForgeMetadataClient>();
@@ -65,7 +67,9 @@ public static class ServiceCollectionExtensions
         Services.AddSingleton<IAccountRepository, JsonAccountRepository>();
         Services.AddSingleton<IInstanceRepository, JsonInstanceRepository>();
         Services.AddSingleton<IInstanceContentMetadataRepository, JsonInstanceContentMetadataRepository>();
+        Services.AddSingleton<IInstanceModpackMetadataRepository, JsonInstanceModpackMetadataRepository>();
         Services.AddSingleton<IJavaInstallationRepository, JsonJavaInstallationRepository>();
+        Services.AddSingleton<ILauncherRuntimeSettingsRepository, JsonLauncherRuntimeSettingsRepository>();
         Services.AddSingleton<ISkinLibraryRepository, JsonSkinLibraryRepository>();
         Services.AddSingleton<IAccountAppearanceRepository, JsonAccountAppearanceRepository>();
         Services.AddSingleton<IManualDownloadStateStore, JsonManualDownloadStateStore>();
@@ -95,6 +99,7 @@ public static class ServiceCollectionExtensions
         Services.AddSingleton<IJavaVersionProbe, JavaVersionProbe>();
         Services.AddSingleton<IJavaValidationService, JavaValidationService>();
         Services.AddSingleton<IJavaDiscoveryService, JavaDiscoveryService>();
+        Services.AddSingleton<IManagedJavaRuntimeService, ManagedJavaRuntimeService>();
         Services.AddSingleton<IJavaRuntimeResolver, ManagedJavaRuntimeResolver>();
         Services.AddSingleton<IJavaRequirementResolver, JavaRequirementResolver>();
         Services.AddSingleton<IInstanceContentIndexer, FileSystemInstanceContentIndexer>();
@@ -102,6 +107,10 @@ public static class ServiceCollectionExtensions
         Services.AddSingleton<ILaunchSessionObserver, InstanceLaunchSessionObserver>();
 
         Services.AddTransient<DiscoverJavaUseCase>();
+        Services.AddTransient<GetManagedJavaRuntimeSlotsUseCase>();
+        Services.AddTransient<InstallManagedJavaRuntimeUseCase>();
+        Services.AddTransient<GetLauncherRuntimeSettingsUseCase>();
+        Services.AddTransient<SaveLauncherRuntimeSettingsUseCase>();
         Services.AddTransient<ValidateJavaUseCase>();
 
         Services.AddSingleton<BlockiumLauncher.Application.Abstractions.Storage.ITempWorkspaceFactory, BlockiumLauncher.Infrastructure.Storage.TempWorkspaceFactory>();
@@ -132,13 +141,25 @@ public static class ServiceCollectionExtensions
         Services.AddTransient<BuildLaunchPlanUseCase>();
         Services.AddTransient<LaunchInstanceUseCase>();
         Services.AddTransient<GetLaunchStatusUseCase>();
+        Services.AddTransient<GetLatestLaunchOutputUseCase>();
+        Services.AddTransient<ClearLatestLaunchOutputUseCase>();
         Services.AddTransient<StopLaunchUseCase>();
         Services.AddTransient<ListInstanceBrowserSummariesUseCase>();
         Services.AddTransient<ListInstanceContentUseCase>();
         Services.AddTransient<RescanInstanceContentUseCase>();
         Services.AddTransient<SetModEnabledUseCase>();
+        Services.AddTransient<SetInstanceContentEnabledUseCase>();
+        Services.AddTransient<DeleteInstanceContentUseCase>();
+        Services.AddTransient<CloneInstanceUseCase>();
+        Services.AddTransient<DeleteInstanceUseCase>();
+        Services.AddTransient<GetInstanceDetailsUseCase>();
+        Services.AddTransient<UpdateInstanceConfigurationUseCase>();
+        Services.AddTransient<GetInstanceModpackMetadataUseCase>();
+        Services.AddTransient<SaveInstanceModpackMetadataUseCase>();
+        Services.AddTransient<DeleteInstanceModpackMetadataUseCase>();
         Services.AddTransient<SearchCatalogUseCase>();
         Services.AddTransient<GetCatalogProjectDetailsUseCase>();
+        Services.AddTransient<GetCatalogFileDetailsUseCase>();
         Services.AddTransient<GetCatalogProviderMetadataUseCase>();
         Services.AddTransient<ListCatalogFilesUseCase>();
         Services.AddTransient<InstallCatalogContentUseCase>();

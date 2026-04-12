@@ -167,8 +167,10 @@ public sealed class ModrinthContentCatalogServiceTests
             {
                 return Result<string>.Success("""
                 [
-                  { "version": "1.21.1" },
-                  { "version": "1.20.6" }
+                  { "version": "1.21.1", "version_type": "release" },
+                  { "version": "1.20.6", "version_type": "release" },
+                  { "version": "25w10a", "version_type": "snapshot" },
+                  { "version": "b1.7.3" }
                 ]
                 """);
             }
@@ -199,6 +201,9 @@ public sealed class ModrinthContentCatalogServiceTests
         Assert.Contains("adventure", result.Value.Categories);
         Assert.DoesNotContain("optimization", result.Value.Categories);
         Assert.Contains("1.21.1", result.Value.GameVersions);
+        Assert.Contains("1.20.6", result.Value.GameVersions);
+        Assert.DoesNotContain("25w10a", result.Value.GameVersions);
+        Assert.DoesNotContain("b1.7.3", result.Value.GameVersions);
         Assert.Contains("fabric", result.Value.Loaders, StringComparer.OrdinalIgnoreCase);
         Assert.DoesNotContain("bukkit", result.Value.Loaders, StringComparer.OrdinalIgnoreCase);
     }
@@ -335,6 +340,48 @@ public sealed class ModrinthContentCatalogServiceTests
         Assert.False(result.Value.IsServerPack);
     }
 
+    [Fact]
+    public async Task ResolveFileAsync_UsesExactVersionEndpoint_WhenFileIdIsProvided()
+    {
+        var httpClient = new FakeMetadataHttpClient(uri =>
+        {
+            Assert.EndsWith("/v2/version/older-version", uri.AbsoluteUri, StringComparison.Ordinal);
+
+            return Result<string>.Success("""
+            {
+              "id": "older-version",
+              "name": "Example Pack 1.0.0",
+              "version_number": "1.0.0",
+              "date_published": "2025-01-01T00:00:00Z",
+              "loaders": ["fabric"],
+              "game_versions": ["1.20.1"],
+              "files": [
+                {
+                  "filename": "example-pack-1.0.0.mrpack",
+                  "url": "https://cdn.modrinth.com/example-pack-1.0.0.mrpack",
+                  "primary": true,
+                  "size": 1024,
+                  "hashes": { "sha1": "ABC123" }
+                }
+              ]
+            }
+            """);
+        });
+
+        var service = new ModrinthContentCatalogService(httpClient);
+        var result = await service.ResolveFileAsync(new CatalogFileResolutionQuery
+        {
+            Provider = CatalogProvider.Modrinth,
+            ContentType = CatalogContentType.Modpack,
+            ProjectId = "example-pack",
+            FileId = "older-version"
+        });
+
+        Assert.True(result.IsSuccess, result.IsFailure ? result.Error.Message : string.Empty);
+        Assert.Equal("older-version", result.Value.FileId);
+        Assert.Equal("example-pack-1.0.0.mrpack", result.Value.FileName);
+    }
+
     private sealed class FakeMetadataHttpClient : IMetadataHttpClient
     {
         private readonly Func<Uri, Result<string>> handler;
@@ -350,6 +397,11 @@ public sealed class ModrinthContentCatalogServiceTests
         }
 
         public Task<Result<Stream>> GetStreamAsync(Uri Uri, CancellationToken CancellationToken)
+        {
+            throw new NotSupportedException();
+        }
+
+        public Task<Result<MetadataStreamResponse>> GetStreamResponseAsync(Uri Uri, CancellationToken CancellationToken)
         {
             throw new NotSupportedException();
         }

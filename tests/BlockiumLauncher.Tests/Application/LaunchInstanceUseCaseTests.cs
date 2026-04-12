@@ -232,6 +232,16 @@ public sealed class LaunchInstanceUseCaseTests
         {
             return Task.FromResult(Result.Success());
         }
+
+        public Task<Result<IReadOnlyList<LaunchOutputLine>>> GetLatestOutputAsync(string instanceId, CancellationToken CancellationToken = default)
+        {
+            return Task.FromResult(Result<IReadOnlyList<LaunchOutputLine>>.Success(Array.Empty<LaunchOutputLine>()));
+        }
+
+        public Task<Result> ClearLatestOutputAsync(string instanceId, CancellationToken CancellationToken = default)
+        {
+            return Task.FromResult(Result.Success());
+        }
     }
 
     private sealed class FakeInstanceRepository : IInstanceRepository

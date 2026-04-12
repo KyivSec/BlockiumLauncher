@@ -32,6 +32,7 @@ internal sealed class SharedRuntimeDownloadSupport
         InstallPlan Plan,
         string RootPath,
         OperationContext Context,
+        IProgress<InstallPreparationProgress>? Progress,
         CancellationToken CancellationToken)
     {
         using var HttpClient = new HttpClient();
@@ -79,6 +80,10 @@ internal sealed class SharedRuntimeDownloadSupport
         var ClientUrl = ClientDownload.GetProperty("url").GetString()!;
         var ClientSha1 = ClientDownload.TryGetProperty("sha1", out var ClientSha1Element) ? ClientSha1Element.GetString() : null;
 
+        Progress?.Report(new InstallPreparationProgress(
+            InstallPreparationPhase.DownloadingRuntime,
+            "Downloading runtime",
+            "Fetching the Minecraft runtime required by this instance."));
         await DownloadFileAsync(HttpClient, ClientUrl, ClientJarPath, ClientSha1, CancellationToken).ConfigureAwait(false);
 
         var ClasspathEntries = new List<string>();
@@ -89,6 +94,7 @@ internal sealed class SharedRuntimeDownloadSupport
                 LibrariesElement,
                 LibrariesRoot,
                 Context,
+                Progress,
                 CancellationToken).ConfigureAwait(false);
 
             ClasspathEntries.AddRange(DownloadedClasspathEntries);
@@ -132,6 +138,7 @@ internal sealed class SharedRuntimeDownloadSupport
                         ObjectsElement,
                         AssetsObjectsRoot,
                         Context,
+                        Progress,
                         CancellationToken).ConfigureAwait(false);
                 }
             }
@@ -289,6 +296,7 @@ internal sealed class SharedRuntimeDownloadSupport
         JsonElement LibrariesElement,
         string LibrariesRoot,
         OperationContext Context,
+        IProgress<InstallPreparationProgress>? Progress,
         CancellationToken CancellationToken)
     {
         var Results = new System.Collections.Concurrent.ConcurrentBag<string>();
@@ -349,6 +357,15 @@ internal sealed class SharedRuntimeDownloadSupport
         }
 
         var Counter = 0;
+        if (WorkItems.Count > 0)
+        {
+            Progress?.Report(new InstallPreparationProgress(
+                InstallPreparationPhase.DownloadingLibraries,
+                "Downloading libraries",
+                $"Fetching {WorkItems.Count} library file(s).",
+                0,
+                WorkItems.Count));
+        }
 
         await Parallel.ForEachAsync(
             WorkItems,
@@ -368,6 +385,12 @@ internal sealed class SharedRuntimeDownloadSupport
                 }
 
                 var Current = Interlocked.Increment(ref Counter);
+                Progress?.Report(new InstallPreparationProgress(
+                    InstallPreparationPhase.DownloadingLibraries,
+                    "Downloading libraries",
+                    $"Fetched {Current} of {WorkItems.Count} library file(s).",
+                    Current,
+                    WorkItems.Count));
                 if (Current % 25 == 0)
                 {
                     Logger.Info(Context, SourceName, "LibrariesProgress", "Library download progress.", new
@@ -387,6 +410,7 @@ internal sealed class SharedRuntimeDownloadSupport
         JsonElement ObjectsElement,
         string AssetsObjectsRoot,
         OperationContext Context,
+        IProgress<InstallPreparationProgress>? Progress,
         CancellationToken CancellationToken)
     {
         var AssetHashes = ObjectsElement
@@ -398,6 +422,15 @@ internal sealed class SharedRuntimeDownloadSupport
             .ToArray();
 
         var Counter = 0;
+        if (AssetHashes.Length > 0)
+        {
+            Progress?.Report(new InstallPreparationProgress(
+                InstallPreparationPhase.DownloadingAssets,
+                "Downloading assets",
+                $"Fetching {AssetHashes.Length} game asset(s).",
+                0,
+                AssetHashes.Length));
+        }
 
         await Parallel.ForEachAsync(
             AssetHashes,
@@ -417,6 +450,12 @@ internal sealed class SharedRuntimeDownloadSupport
                 await DownloadFileAsync(HttpClient, AssetObjectUrl, AssetObjectPath, Hash, Ct).ConfigureAwait(false);
 
                 var Current = Interlocked.Increment(ref Counter);
+                Progress?.Report(new InstallPreparationProgress(
+                    InstallPreparationPhase.DownloadingAssets,
+                    "Downloading assets",
+                    $"Fetched {Current} of {AssetHashes.Length} game asset(s).",
+                    Current,
+                    AssetHashes.Length));
                 if (Current % 100 == 0)
                 {
                     Logger.Info(Context, SourceName, "AssetsProgress", "Asset download progress.", new

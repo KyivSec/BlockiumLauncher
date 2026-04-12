@@ -7,10 +7,12 @@ using BlockiumLauncher.Application.Abstractions.Storage;
 using BlockiumLauncher.Application.UseCases.Catalog;
 using BlockiumLauncher.Application.UseCases.Common;
 using BlockiumLauncher.Application.UseCases.Install;
+using BlockiumLauncher.Backend.Catalog;
 using BlockiumLauncher.Domain.Entities;
 using BlockiumLauncher.Domain.Enums;
 using BlockiumLauncher.Domain.ValueObjects;
 using BlockiumLauncher.Infrastructure.Downloads;
+using BlockiumLauncher.Infrastructure.Metadata.Clients;
 using BlockiumLauncher.Infrastructure.Persistence.Paths;
 using BlockiumLauncher.Shared.Primitives;
 using BlockiumLauncher.Shared.Results;
@@ -40,16 +42,20 @@ public sealed class ModrinthModpackImportTests
                 new FakeFileTransaction(),
                 repository,
                 metadataService);
+            var contentCatalog = new FakeContentCatalogFileService();
+            var manualDownloadStateStore = new InMemoryManualDownloadStateStore();
+            var pipeline = CreatePipeline(contentCatalog, installUseCase, metadataService, manualDownloadStateStore);
 
             var importUseCase = new ImportCatalogModpackUseCase(
-                new FakeContentCatalogFileService(),
+                pipeline,
+                contentCatalog,
                 new FakeDownloader(),
                 tempWorkspaceFactory,
                 new FakeArchiveExtractor(),
                 installUseCase,
                 repository,
                 metadataService,
-                new InMemoryManualDownloadStateStore());
+                manualDownloadStateStore);
 
             var result = await importUseCase.ExecuteAsync(new ImportCatalogModpackRequest
             {
@@ -75,10 +81,72 @@ public sealed class ModrinthModpackImportTests
         }
     }
 
+    [Fact]
+    public async Task ExecuteAsync_UsesSelectedVersionAndLoaderFilters_WhenResolvingModpackFile()
+    {
+        var rootDirectory = Path.Combine(Path.GetTempPath(), "BlockiumLauncher.Tests", Path.GetRandomFileName());
+        Directory.CreateDirectory(rootDirectory);
+
+        try
+        {
+            var launcherPaths = new LauncherPaths(rootDirectory);
+            var repository = new InMemoryInstanceRepository();
+            var metadataService = new FakeInstanceContentMetadataService();
+            var tempWorkspaceFactory = new FakeTempWorkspaceFactory();
+            var contentCatalog = new FilteringFakeContentCatalogFileService();
+
+            var installUseCase = new InstallInstanceUseCase(
+                new InstallPlanBuilder(new FakeVersionManifestService(), new FakeLoaderMetadataService(), launcherPaths),
+                tempWorkspaceFactory,
+                new FakeInstanceContentInstaller(),
+                new FakeFileTransaction(),
+                repository,
+                metadataService);
+            var manualDownloadStateStore = new InMemoryManualDownloadStateStore();
+            var pipeline = CreatePipeline(contentCatalog, installUseCase, metadataService, manualDownloadStateStore);
+
+            var importUseCase = new ImportCatalogModpackUseCase(
+                pipeline,
+                contentCatalog,
+                new FakeDownloader(),
+                tempWorkspaceFactory,
+                new FakeArchiveExtractor(),
+                installUseCase,
+                repository,
+                metadataService,
+                manualDownloadStateStore);
+
+            var result = await importUseCase.ExecuteAsync(new ImportCatalogModpackRequest
+            {
+                Provider = CatalogProvider.Modrinth,
+                ProjectId = "awesome-pack",
+                InstanceName = "Awesome Pack",
+                GameVersions = ["1.20.1", "1.21.1"],
+                Loaders = ["fabric"]
+            });
+
+            Assert.True(result.IsSuccess);
+            Assert.Equal("version-2", result.Value.File.FileId);
+            Assert.Contains(contentCatalog.ObservedQueries, query => string.Equals(query.GameVersion, "1.20.1", StringComparison.OrdinalIgnoreCase));
+            Assert.Contains(contentCatalog.ObservedQueries, query => string.Equals(query.GameVersion, "1.21.1", StringComparison.OrdinalIgnoreCase));
+            Assert.All(contentCatalog.ObservedQueries, query => Assert.Equal("fabric", query.Loader));
+        }
+        finally
+        {
+            if (Directory.Exists(rootDirectory))
+            {
+                Directory.Delete(rootDirectory, true);
+            }
+        }
+    }
+
     private sealed class FakeContentCatalogFileService : IContentCatalogFileService
     {
         public Task<Result<IReadOnlyList<CatalogFileSummary>>> GetFilesAsync(CatalogFileQuery query, CancellationToken cancellationToken = default)
             => throw new NotSupportedException();
+
+        public Task<Result<CatalogFileDetails>> GetFileDetailsAsync(CatalogFileDetailsQuery query, CancellationToken cancellationToken = default)
+            => Task.FromResult(Result<CatalogFileDetails>.Failure(new Shared.Errors.Error("Metadata.NotFound", "Not used in this test.")));
 
         public Task<Result<CatalogFileSummary>> ResolveFileAsync(CatalogFileResolutionQuery query, CancellationToken cancellationToken = default)
         {
@@ -92,6 +160,67 @@ public sealed class ModrinthModpackImportTests
                 FileName = "awesome-pack.mrpack",
                 DownloadUrl = "https://downloads.invalid/awesome-pack.mrpack"
             }));
+        }
+    }
+
+    private sealed class FilteringFakeContentCatalogFileService : IContentCatalogFileService
+    {
+        public List<CatalogFileResolutionQuery> ObservedQueries { get; } = [];
+
+        public Task<Result<IReadOnlyList<CatalogFileSummary>>> GetFilesAsync(CatalogFileQuery query, CancellationToken cancellationToken = default)
+            => throw new NotSupportedException();
+
+        public Task<Result<CatalogFileDetails>> GetFileDetailsAsync(CatalogFileDetailsQuery query, CancellationToken cancellationToken = default)
+            => Task.FromResult(Result<CatalogFileDetails>.Failure(new Shared.Errors.Error("Metadata.NotFound", "Not used in this test.")));
+
+        public Task<Result<CatalogFileSummary>> ResolveFileAsync(CatalogFileResolutionQuery query, CancellationToken cancellationToken = default)
+        {
+            ObservedQueries.Add(query);
+
+            if (query.ContentType != CatalogContentType.Modpack)
+            {
+                throw new NotSupportedException();
+            }
+
+            if (string.Equals(query.GameVersion, "1.21.1", StringComparison.OrdinalIgnoreCase) &&
+                string.Equals(query.Loader, "fabric", StringComparison.OrdinalIgnoreCase))
+            {
+                return Task.FromResult(Result<CatalogFileSummary>.Success(new CatalogFileSummary
+                {
+                    Provider = CatalogProvider.Modrinth,
+                    ContentType = CatalogContentType.Modpack,
+                    ProjectId = query.ProjectId,
+                    FileId = "version-2",
+                    DisplayName = "Awesome Pack 2",
+                    FileName = "awesome-pack-2.mrpack",
+                    DownloadUrl = "https://downloads.invalid/awesome-pack-2.mrpack",
+                    PublishedAtUtc = new DateTimeOffset(2026, 4, 1, 0, 0, 0, TimeSpan.Zero),
+                    GameVersions = ["1.21.1"],
+                    Loaders = ["fabric"]
+                }));
+            }
+
+            if (string.Equals(query.GameVersion, "1.20.1", StringComparison.OrdinalIgnoreCase) &&
+                string.Equals(query.Loader, "fabric", StringComparison.OrdinalIgnoreCase))
+            {
+                return Task.FromResult(Result<CatalogFileSummary>.Success(new CatalogFileSummary
+                {
+                    Provider = CatalogProvider.Modrinth,
+                    ContentType = CatalogContentType.Modpack,
+                    ProjectId = query.ProjectId,
+                    FileId = "version-1",
+                    DisplayName = "Awesome Pack 1",
+                    FileName = "awesome-pack-1.mrpack",
+                    DownloadUrl = "https://downloads.invalid/awesome-pack-1.mrpack",
+                    PublishedAtUtc = new DateTimeOffset(2026, 3, 1, 0, 0, 0, TimeSpan.Zero),
+                    GameVersions = ["1.20.1"],
+                    Loaders = ["fabric"]
+                }));
+            }
+
+            return Task.FromResult(Result<CatalogFileSummary>.Failure(new Shared.Errors.Error(
+                "Metadata.NotFound",
+                "No compatible file.")));
         }
     }
 
@@ -139,6 +268,35 @@ public sealed class ModrinthModpackImportTests
             File.WriteAllBytes(Request.DestinationPath, [1, 2, 3, 4]);
             return Task.FromResult(Result<DownloadResult>.Success(new DownloadResult(Request.DestinationPath, 4)));
         }
+
+        public async Task<Result<DownloadBatchResult>> DownloadBatchAsync(
+            DownloadBatchRequest Request,
+            IProgress<DownloadBatchProgress>? Progress = null,
+            CancellationToken CancellationToken = default)
+        {
+            var results = new List<DownloadResult>();
+            long totalBytes = 0;
+
+            for (var index = 0; index < Request.Requests.Count; index++)
+            {
+                var result = await DownloadAsync(Request.Requests[index], CancellationToken);
+                if (result.IsFailure)
+                {
+                    return Result<DownloadBatchResult>.Failure(result.Error);
+                }
+
+                results.Add(result.Value);
+                totalBytes += result.Value.BytesWritten;
+                Progress?.Report(new DownloadBatchProgress(
+                    index + 1,
+                    Request.Requests.Count,
+                    totalBytes,
+                    totalBytes,
+                    Path.GetFileName(Request.Requests[index].DestinationPath)));
+            }
+
+            return Result<DownloadBatchResult>.Success(new DownloadBatchResult(results, totalBytes));
+        }
     }
 
     private sealed class FakeTempWorkspaceFactory : ITempWorkspaceFactory
@@ -177,7 +335,11 @@ public sealed class ModrinthModpackImportTests
 
     private sealed class FakeInstanceContentInstaller : IInstanceContentInstaller
     {
-        public Task<Result<string>> PrepareAsync(InstallPlan Plan, ITempWorkspace Workspace, CancellationToken CancellationToken = default)
+        public Task<Result<string>> PrepareAsync(
+            InstallPlan Plan,
+            ITempWorkspace Workspace,
+            IProgress<InstallPreparationProgress>? Progress = null,
+            CancellationToken CancellationToken = default)
         {
             var stagedRoot = Workspace.GetPath("prepared");
             Directory.CreateDirectory(Path.Combine(stagedRoot, ".minecraft", "mods"));
@@ -302,6 +464,12 @@ public sealed class ModrinthModpackImportTests
         public Task<InstanceContentMetadata> SetModEnabledAsync(LauncherInstance instance, string modReference, bool enabled, CancellationToken cancellationToken = default)
             => Task.FromResult(new InstanceContentMetadata());
 
+        public Task<InstanceContentMetadata> SetContentEnabledAsync(LauncherInstance instance, InstanceContentCategory category, string contentReference, bool enabled, CancellationToken cancellationToken = default)
+            => Task.FromResult(new InstanceContentMetadata());
+
+        public Task<InstanceContentMetadata> DeleteContentAsync(LauncherInstance instance, InstanceContentCategory category, string contentReference, CancellationToken cancellationToken = default)
+            => Task.FromResult(new InstanceContentMetadata());
+
         public Task<InstanceContentMetadata> RecordLaunchAsync(LauncherInstance instance, DateTimeOffset startedAtUtc, DateTimeOffset exitedAtUtc, CancellationToken cancellationToken = default)
             => Task.FromResult(new InstanceContentMetadata());
 
@@ -333,5 +501,41 @@ public sealed class ModrinthModpackImportTests
             => Task.FromResult(Result<IReadOnlyList<LoaderVersionSummary>>.Success([
                 new LoaderVersionSummary(LoaderType.Fabric, VersionId.Parse("1.20.1"), "0.16.9", true)
             ]));
+    }
+
+    private static CatalogModpackImportPipeline CreatePipeline(
+        IContentCatalogFileService contentCatalogFileService,
+        InstallInstanceUseCase installUseCase,
+        IInstanceContentMetadataService metadataService,
+        IManualDownloadStateStore manualDownloadStateStore)
+    {
+        var httpClient = new HttpClient(new TestHttpMessageHandler(_ => throw new InvalidOperationException("CurseForge preflight should not run in Modrinth tests.")));
+        var curseForgeService = new CurseForgeContentCatalogService(httpClient, new CurseForgeOptions
+        {
+            ApiKey = "test-api-key"
+        });
+
+        return new CatalogModpackImportPipeline(
+            new CurseForgeModpackPreflightService(curseForgeService, contentCatalogFileService),
+            contentCatalogFileService,
+            new FakeDownloader(),
+            installUseCase,
+            metadataService,
+            manualDownloadStateStore);
+    }
+
+    private sealed class TestHttpMessageHandler : HttpMessageHandler
+    {
+        private readonly Func<HttpRequestMessage, HttpResponseMessage> handler;
+
+        public TestHttpMessageHandler(Func<HttpRequestMessage, HttpResponseMessage> handler)
+        {
+            this.handler = handler;
+        }
+
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            return Task.FromResult(handler(request));
+        }
     }
 }

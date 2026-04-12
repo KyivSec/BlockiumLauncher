@@ -225,6 +225,7 @@ public sealed class ModrinthContentCatalogService : IContentCatalogProvider, ICo
 
             var files = document.RootElement
                 .EnumerateArray()
+                .Where(static version => IsReleaseVersion(version))
                 .Select(version => MapVersionToFileSummary(version, query.ProjectId, query.ContentType))
                 .Where(static summary => summary is not null)
                 .Cast<CatalogFileSummary>()
@@ -254,6 +255,14 @@ public sealed class ModrinthContentCatalogService : IContentCatalogProvider, ICo
                 new Shared.Errors.Error("Catalog.InvalidRequest", "A valid Modrinth project id is required."));
         }
 
+        var requestedGameVersions = MergeRequestedValues(query.GameVersions, query.GameVersion);
+        var requestedLoaders = MergeRequestedValues(query.Loaders, query.Loader);
+
+        if (!string.IsNullOrWhiteSpace(query.FileId))
+        {
+            return await GetFileByIdAsync(query, requestedGameVersions, requestedLoaders, cancellationToken).ConfigureAwait(false);
+        }
+
         var fileListResult = await GetFilesAsync(new CatalogFileQuery
         {
             Provider = query.Provider,
@@ -270,13 +279,16 @@ public sealed class ModrinthContentCatalogService : IContentCatalogProvider, ICo
             return Result<CatalogFileSummary>.Failure(fileListResult.Error);
         }
 
-        var requestedFileId = NormalizeOptional(query.FileId);
-        var candidate = !string.IsNullOrWhiteSpace(requestedFileId)
-            ? fileListResult.Value.FirstOrDefault(file => string.Equals(file.FileId, requestedFileId, StringComparison.OrdinalIgnoreCase))
-            : fileListResult.Value
-                .OrderByDescending(file => ScoreFile(file, query.GameVersion, query.Loader))
-                .ThenByDescending(static file => file.PublishedAtUtc)
-                .FirstOrDefault();
+        var candidatePool = fileListResult.Value.AsEnumerable();
+        if (requestedGameVersions.Count > 0 || requestedLoaders.Count > 0)
+        {
+            candidatePool = candidatePool.Where(file => MatchesRequestedFileFilters(file, requestedGameVersions, requestedLoaders));
+        }
+
+        var candidate = candidatePool
+            .OrderByDescending(file => ScoreFile(file, requestedGameVersions, requestedLoaders))
+            .ThenByDescending(static file => file.PublishedAtUtc)
+            .FirstOrDefault();
 
         if (candidate is null)
         {
@@ -285,6 +297,89 @@ public sealed class ModrinthContentCatalogService : IContentCatalogProvider, ICo
         }
 
         return Result<CatalogFileSummary>.Success(candidate);
+    }
+
+    public async Task<Result<CatalogFileDetails>> GetFileDetailsAsync(
+        CatalogFileDetailsQuery query,
+        CancellationToken cancellationToken = default)
+    {
+        if (query is null ||
+            string.IsNullOrWhiteSpace(query.ProjectId) ||
+            string.IsNullOrWhiteSpace(query.FileId))
+        {
+            return Result<CatalogFileDetails>.Failure(
+                new Shared.Errors.Error("Catalog.InvalidRequest", "A valid Modrinth project id and file id are required."));
+        }
+
+        var response = await metadataHttpClient
+            .GetStringAsync(new Uri(MetadataEndpoints.ModrinthVersion(query.FileId)), cancellationToken)
+            .ConfigureAwait(false);
+        if (response.IsFailure)
+        {
+            return Result<CatalogFileDetails>.Failure(response.Error);
+        }
+
+        try
+        {
+            using var document = JsonDocument.Parse(response.Value);
+            return Result<CatalogFileDetails>.Success(new CatalogFileDetails
+            {
+                Provider = CatalogProvider.Modrinth,
+                ContentType = query.ContentType,
+                ProjectId = query.ProjectId,
+                FileId = GetString(document.RootElement, "id"),
+                DisplayName = GetString(document.RootElement, "name"),
+                ProjectUrl = null,
+                FilePageUrl = null,
+                PublishedAtUtc = GetDateTimeOffset(document.RootElement, "date_published"),
+                ChangelogText = GetString(document.RootElement, "changelog")
+            });
+        }
+        catch (JsonException exception)
+        {
+            return Result<CatalogFileDetails>.Failure(
+                MetadataErrors.InvalidPayload("Failed to parse the Modrinth version details response.", exception.Message));
+        }
+    }
+
+    private async Task<Result<CatalogFileSummary>> GetFileByIdAsync(
+        CatalogFileResolutionQuery query,
+        IReadOnlyList<string> requestedGameVersions,
+        IReadOnlyList<string> requestedLoaders,
+        CancellationToken cancellationToken)
+    {
+        var response = await metadataHttpClient
+            .GetStringAsync(new Uri(MetadataEndpoints.ModrinthVersion(query.FileId!)), cancellationToken)
+            .ConfigureAwait(false);
+        if (response.IsFailure)
+        {
+            return Result<CatalogFileSummary>.Failure(response.Error);
+        }
+
+        try
+        {
+            using var document = JsonDocument.Parse(response.Value);
+            var summary = MapVersionToFileSummary(document.RootElement, query.ProjectId, query.ContentType);
+            if (summary is null)
+            {
+                return Result<CatalogFileSummary>.Failure(
+                    MetadataErrors.InvalidPayload("Modrinth version response did not contain a usable primary file."));
+            }
+
+            if ((requestedGameVersions.Count > 0 || requestedLoaders.Count > 0) &&
+                !MatchesRequestedFileFilters(summary, requestedGameVersions, requestedLoaders))
+            {
+                return Result<CatalogFileSummary>.Failure(
+                    MetadataErrors.NotFound("No matching Modrinth file was found for the requested project."));
+            }
+
+            return Result<CatalogFileSummary>.Success(summary);
+        }
+        catch (JsonException exception)
+        {
+            return Result<CatalogFileSummary>.Failure(
+                MetadataErrors.InvalidPayload("Failed to parse the Modrinth version response.", exception.Message));
+        }
     }
 
     private static Uri BuildSearchUri(CatalogSearchQuery query)
@@ -399,10 +494,41 @@ public sealed class ModrinthContentCatalogService : IContentCatalogProvider, ICo
         return root
             .EnumerateArray()
             .Where(static item => item.ValueKind == JsonValueKind.Object)
+            .Where(static item => IsReleaseGameVersion(item))
             .Select(item => GetString(item, "version"))
             .Where(static item => !string.IsNullOrWhiteSpace(item))
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToList();
+    }
+
+    private static bool IsReleaseGameVersion(JsonElement element)
+    {
+        if (element.TryGetProperty("version_type", out var versionTypeElement) &&
+            versionTypeElement.ValueKind == JsonValueKind.String)
+        {
+            return string.Equals(versionTypeElement.GetString(), "release", StringComparison.OrdinalIgnoreCase);
+        }
+
+        var version = GetString(element, "version");
+        return LooksLikeReleaseVersion(version);
+    }
+
+    private static bool LooksLikeReleaseVersion(string? version)
+    {
+        if (string.IsNullOrWhiteSpace(version))
+        {
+            return false;
+        }
+
+        foreach (var character in version)
+        {
+            if (!char.IsDigit(character) && character != '.')
+            {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     private static IReadOnlyList<string> ParseModrinthLoaders(JsonElement root, CatalogContentType contentType)
@@ -526,6 +652,17 @@ public sealed class ModrinthContentCatalogService : IContentCatalogProvider, ICo
         };
     }
 
+    private static bool IsReleaseVersion(JsonElement version)
+    {
+        if (version.TryGetProperty("version_type", out var versionTypeElement) &&
+            versionTypeElement.ValueKind == JsonValueKind.String)
+        {
+            return string.Equals(versionTypeElement.GetString(), "release", StringComparison.OrdinalIgnoreCase);
+        }
+
+        return true;
+    }
+
     private static bool MatchesFileFilters(CatalogFileSummary summary, string? gameVersion, string? loader)
     {
         if (!string.IsNullOrWhiteSpace(gameVersion) &&
@@ -543,18 +680,41 @@ public sealed class ModrinthContentCatalogService : IContentCatalogProvider, ICo
         return true;
     }
 
-    private static int ScoreFile(CatalogFileSummary file, string? gameVersion, string? loader)
+    private static bool MatchesRequestedFileFilters(
+        CatalogFileSummary file,
+        IReadOnlyList<string> requestedGameVersions,
+        IReadOnlyList<string> requestedLoaders)
+    {
+        if (requestedGameVersions.Count > 0 &&
+            !file.GameVersions.Any(version => requestedGameVersions.Contains(version, StringComparer.OrdinalIgnoreCase)))
+        {
+            return false;
+        }
+
+        if (requestedLoaders.Count > 0 &&
+            !file.Loaders.Any(loader => requestedLoaders.Contains(loader, StringComparer.OrdinalIgnoreCase)))
+        {
+            return false;
+        }
+
+        return true;
+    }
+
+    private static int ScoreFile(
+        CatalogFileSummary file,
+        IReadOnlyList<string> requestedGameVersions,
+        IReadOnlyList<string> requestedLoaders)
     {
         var score = 0;
 
-        if (!string.IsNullOrWhiteSpace(gameVersion) &&
-            file.GameVersions.Contains(gameVersion.Trim(), StringComparer.OrdinalIgnoreCase))
+        if (requestedGameVersions.Count > 0 &&
+            file.GameVersions.Any(version => requestedGameVersions.Contains(version, StringComparer.OrdinalIgnoreCase)))
         {
             score += 4;
         }
 
-        if (!string.IsNullOrWhiteSpace(loader) &&
-            file.Loaders.Contains(loader.Trim(), StringComparer.OrdinalIgnoreCase))
+        if (requestedLoaders.Count > 0 &&
+            file.Loaders.Any(loader => requestedLoaders.Contains(loader, StringComparer.OrdinalIgnoreCase)))
         {
             score += 2;
         }

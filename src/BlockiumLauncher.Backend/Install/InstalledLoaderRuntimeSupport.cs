@@ -37,7 +37,12 @@ internal sealed class InstalledLoaderRuntimeSupport
         OperationContext Context,
         CancellationToken CancellationToken)
     {
-        var JavaResolveResult = await JavaRuntimeResolver.ResolveExecutablePathAsync(Plan.GameVersion, CancellationToken).ConfigureAwait(false);
+        var JavaResolveResult = await JavaRuntimeResolver.ResolveExecutablePathAsync(
+            Plan.GameVersion,
+            LoaderType,
+            preferredJavaMajor: null,
+            skipCompatibilityChecks: false,
+            CancellationToken).ConfigureAwait(false);
         if (JavaResolveResult.IsFailure)
         {
             throw new InvalidOperationException($"Could not resolve Java for {LoaderType} installer.");

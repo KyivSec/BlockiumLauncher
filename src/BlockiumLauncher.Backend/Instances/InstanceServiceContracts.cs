@@ -28,6 +28,19 @@ public interface IInstanceContentMetadataService
         bool enabled,
         CancellationToken cancellationToken = default);
 
+    Task<InstanceContentMetadata> SetContentEnabledAsync(
+        LauncherInstance instance,
+        InstanceContentCategory category,
+        string contentReference,
+        bool enabled,
+        CancellationToken cancellationToken = default);
+
+    Task<InstanceContentMetadata> DeleteContentAsync(
+        LauncherInstance instance,
+        InstanceContentCategory category,
+        string contentReference,
+        CancellationToken cancellationToken = default);
+
     Task<InstanceContentMetadata> RecordLaunchAsync(
         LauncherInstance instance,
         DateTimeOffset startedAtUtc,

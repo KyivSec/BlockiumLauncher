@@ -42,6 +42,7 @@ public sealed class ForgeInstallOrchestrator : IForgeInstallOrchestrator
     public async Task<Result<string>> PrepareAsync(
         InstallPlan Plan,
         ITempWorkspace Workspace,
+        IProgress<InstallPreparationProgress>? Progress = null,
         CancellationToken CancellationToken = default)
     {
         var Context = OperationContextFactory.Create("PrepareInstanceContent");
@@ -49,6 +50,11 @@ public sealed class ForgeInstallOrchestrator : IForgeInstallOrchestrator
         try
         {
             CancellationToken.ThrowIfCancellationRequested();
+
+            Progress?.Report(new InstallPreparationProgress(
+                InstallPreparationPhase.Preparing,
+                "Preparing instance runtime",
+                "Resolving the staged instance layout and runtime content."));
 
             Logger.Info(Context, nameof(ForgeInstallOrchestrator), "PrepareStarted", "Preparing instance content.", new
             {
@@ -68,7 +74,7 @@ public sealed class ForgeInstallOrchestrator : IForgeInstallOrchestrator
 
             if (Plan.DownloadRuntime)
             {
-                await PrepareRuntimeAsync(Plan, RootPath, Context, CancellationToken).ConfigureAwait(false);
+                await PrepareRuntimeAsync(Plan, RootPath, Context, Progress, CancellationToken).ConfigureAwait(false);
             }
 
             await RuntimeWorkspaceSupport.WriteInstanceMarkerAsync(Plan, RootPath, CancellationToken).ConfigureAwait(false);
@@ -92,12 +98,13 @@ public sealed class ForgeInstallOrchestrator : IForgeInstallOrchestrator
         InstallPlan Plan,
         string RootPath,
         OperationContext Context,
+        IProgress<InstallPreparationProgress>? Progress,
         CancellationToken CancellationToken)
     {
         switch (Plan.LoaderType)
         {
             case LoaderType.Vanilla:
-                await SharedRuntimeDownloadSupport.DownloadVanillaRuntimeAsync(Plan, RootPath, Context, CancellationToken).ConfigureAwait(false);
+                await SharedRuntimeDownloadSupport.DownloadVanillaRuntimeAsync(Plan, RootPath, Context, Progress, CancellationToken).ConfigureAwait(false);
                 break;
 
             case LoaderType.Fabric:
@@ -106,7 +113,11 @@ public sealed class ForgeInstallOrchestrator : IForgeInstallOrchestrator
                     throw new InvalidOperationException("Fabric preparation requires a loader version.");
                 }
 
-                await SharedRuntimeDownloadSupport.DownloadVanillaRuntimeAsync(Plan, RootPath, Context, CancellationToken).ConfigureAwait(false);
+                await SharedRuntimeDownloadSupport.DownloadVanillaRuntimeAsync(Plan, RootPath, Context, Progress, CancellationToken).ConfigureAwait(false);
+                Progress?.Report(new InstallPreparationProgress(
+                    InstallPreparationPhase.ApplyingLoaderProfile,
+                    "Preparing loader runtime",
+                    "Applying the Fabric loader profile."));
                 await SharedRuntimeDownloadSupport.ApplyFabricRuntimeAsync(Plan, RootPath, CancellationToken).ConfigureAwait(false);
                 break;
 
@@ -116,7 +127,12 @@ public sealed class ForgeInstallOrchestrator : IForgeInstallOrchestrator
                     throw new InvalidOperationException("Forge preparation requires a loader version.");
                 }
 
-                await SharedRuntimeDownloadSupport.DownloadVanillaRuntimeAsync(Plan, RootPath, Context, CancellationToken).ConfigureAwait(false);
+                await SharedRuntimeDownloadSupport.DownloadVanillaRuntimeAsync(Plan, RootPath, Context, Progress, CancellationToken).ConfigureAwait(false);
+
+                Progress?.Report(new InstallPreparationProgress(
+                    InstallPreparationPhase.ApplyingLoaderProfile,
+                    "Preparing loader runtime",
+                    "Installing the Forge runtime."));
 
                 var RuntimeRoot = await InstalledLoaderRuntimeSupport.DownloadAndInstallAsync(
                     Plan,

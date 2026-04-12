@@ -73,9 +73,10 @@ public sealed class SkinCustomizationWindow : Gtk.Window
         DeleteEvent += (_, args) =>
         {
             args.RetVal = true;
-            PrepareForHide();
-            Hide();
+            CloseWindow();
         };
+
+        Destroyed += (_, _) => LauncherWindowMemory.RequestAggressiveCleanup();
 
         Titlebar = BuildHeaderBar();
         Add(BuildRoot());
@@ -86,14 +87,23 @@ public sealed class SkinCustomizationWindow : Gtk.Window
     public void PresentForAccount(Gtk.Window owner, LauncherAccount account)
     {
         CurrentAccount = account ?? throw new ArgumentNullException(nameof(account));
+        TransientFor = owner;
         ShowAll();
         Present();
         _ = LoadAsync();
     }
 
-    private void PrepareForHide()
+    private void PrepareForClose()
     {
         ModelSelectorPopover?.Popdown();
+        CurrentAccount = null;
+        PreviewArea.SetPreview(null, null, SkinModelType.Classic);
+    }
+
+    private void CloseWindow()
+    {
+        PrepareForClose();
+        Destroy();
     }
 
     private void ConfigureButtons()
@@ -114,11 +124,7 @@ public sealed class SkinCustomizationWindow : Gtk.Window
         ImportCapeButton.Clicked += async (_, _) => await ImportCapeAsync().ConfigureAwait(false);
 
         CancelButton.StyleContext.AddClass("action-button");
-        CancelButton.Clicked += (_, _) =>
-        {
-            PrepareForHide();
-            Hide();
-        };
+        CancelButton.Clicked += (_, _) => CloseWindow();
 
         ApplyButton.StyleContext.AddClass("action-button");
         ApplyButton.StyleContext.AddClass("primary-button");
@@ -133,36 +139,7 @@ public sealed class SkinCustomizationWindow : Gtk.Window
 
     private Widget BuildHeaderBar()
     {
-        var bar = new HeaderBar
-        {
-            ShowCloseButton = true,
-            HasSubtitle = false,
-            DecorationLayout = ":minimize,maximize,close"
-        };
-        bar.StyleContext.AddClass("topbar-shell");
-
-        var content = new Box(Orientation.Vertical, 2)
-        {
-            Halign = Align.Start
-        };
-        content.StyleContext.AddClass("topbar-content");
-
-        var title = new Label("Skin customization")
-        {
-            Xalign = 0
-        };
-        title.StyleContext.AddClass("settings-title");
-
-        var subtitle = new Label("Preview the selected appearance and browse saved skin or cape PNG files.")
-        {
-            Xalign = 0
-        };
-        subtitle.StyleContext.AddClass("settings-subtitle");
-
-        content.PackStart(title, false, false, 0);
-        content.PackStart(subtitle, false, false, 0);
-        bar.PackStart(content);
-        return bar;
+        return LauncherGtkChrome.CreateHeaderBar("Skin customization", "Preview the selected appearance and browse saved skin or cape PNG files.", allowWindowControls: true);
     }
 
     private Widget BuildRoot()
@@ -198,10 +175,10 @@ public sealed class SkinCustomizationWindow : Gtk.Window
 
         var content = new Box(Orientation.Vertical, 12)
         {
-            MarginTop = 16,
-            MarginBottom = 16,
-            MarginStart = 16,
-            MarginEnd = 16
+            MarginTop = 12,
+            MarginBottom = 12,
+            MarginStart = 12,
+            MarginEnd = 12
         };
 
         var previewTitle = new Label("Preview")
@@ -209,12 +186,6 @@ public sealed class SkinCustomizationWindow : Gtk.Window
             Xalign = 0
         };
         previewTitle.StyleContext.AddClass("settings-page-title");
-
-        var previewSubtitle = new Label("Drag left or right to rotate the character.")
-        {
-            Xalign = 0
-        };
-        previewSubtitle.StyleContext.AddClass("settings-subtitle");
 
         var previewFrame = new EventBox();
         previewFrame.StyleContext.AddClass("avatar-preview-frame");
@@ -225,7 +196,6 @@ public sealed class SkinCustomizationWindow : Gtk.Window
         previewFrame.Add(PreviewArea);
 
         content.PackStart(previewTitle, false, false, 0);
-        content.PackStart(previewSubtitle, false, false, 0);
         content.PackStart(previewFrame, false, false, 0);
         content.PackStart(BuildSelectionPane(), false, false, 0);
         content.PackStart(new Label { Vexpand = true }, true, true, 0);
@@ -271,10 +241,10 @@ public sealed class SkinCustomizationWindow : Gtk.Window
 
         var content = new Box(Orientation.Vertical, 12)
         {
-            MarginTop = 16,
-            MarginBottom = 16,
-            MarginStart = 16,
-            MarginEnd = 16
+            MarginTop = 12,
+            MarginBottom = 12,
+            MarginStart = 12,
+            MarginEnd = 12
         };
 
         var title = new Label("Library")
@@ -283,14 +253,7 @@ public sealed class SkinCustomizationWindow : Gtk.Window
         };
         title.StyleContext.AddClass("settings-page-title");
 
-        var subtitle = new Label("Choose a saved skin or cape from the launcher library.")
-        {
-            Xalign = 0
-        };
-        subtitle.StyleContext.AddClass("settings-subtitle");
-
         content.PackStart(title, false, false, 0);
-        content.PackStart(subtitle, false, false, 0);
         content.PackStart(AssetNotebook, true, true, 0);
 
         shell.Add(content);
@@ -767,8 +730,7 @@ public sealed class SkinCustomizationWindow : Gtk.Window
         AppearanceApplied?.Invoke(this, new AccountAppearanceAppliedEventArgs(CurrentAccount.AccountId));
         Gtk.Application.Invoke((_, _) =>
         {
-            PrepareForHide();
-            Hide();
+            CloseWindow();
         });
     }
 
@@ -1042,17 +1004,7 @@ public sealed class SkinCustomizationWindow : Gtk.Window
 
     private void ShowError(string title, string message)
     {
-        using var dialog = new MessageDialog(
-            this,
-            DialogFlags.Modal,
-            MessageType.Error,
-            ButtonsType.Ok,
-            message)
-        {
-            Title = title
-        };
-
-        dialog.Run();
+        LauncherGtkChrome.ShowMessage(this, title, message, MessageType.Error);
     }
 }
 

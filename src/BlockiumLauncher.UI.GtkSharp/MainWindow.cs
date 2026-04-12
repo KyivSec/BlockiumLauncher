@@ -11,27 +11,34 @@ using Cairo;
 using Gdk;
 using Gtk;
 using Pango;
+using Microsoft.Extensions.DependencyInjection;
 using System.Text;
 
 namespace BlockiumLauncher.UI.GtkSharp.Windows;
 
 public sealed class MainWindow : Gtk.Window
 {
-    private readonly AddInstanceWindow AddInstanceWindow;
-    private const string DefaultInstanceIconPath = @"C:\Users\Admin\Desktop\instance_default.png";
+    private readonly IServiceProvider ServiceProvider;
+    private AddInstanceWindow? AddInstanceWindow;
+    private AccountsWindow? AccountsWindow;
+    private EditInstanceWindow? EditInstanceWindow;
+    private SettingsWindow? SettingsWindow;
+    private const string DefaultInstanceIconFileName = "instance_default.png";
 
-    private readonly AccountsWindow AccountsWindow;
     private readonly InstanceBrowserRefreshService InstanceBrowserRefreshService;
     private readonly ListInstanceBrowserSummariesUseCase ListInstanceBrowserSummariesUseCase;
+    private readonly CloneInstanceUseCase CloneInstanceUseCase;
+    private readonly DeleteInstanceUseCase DeleteInstanceUseCase;
+    private readonly LaunchController LaunchController;
     private readonly ILauncherPaths LauncherPaths;
-    private readonly SettingsWindow SettingsWindow;
     private readonly LauncherUiPreferencesService UiPreferences;
     private readonly List<System.Action> ThemeIconRefreshers = [];
+    private Button? _filterButton;
+    private Popover? _filterPopover;
 
     private EventBox? _selectedInstanceIconShell;
     private Label? _selectedInstanceNameLabel;
     private Label? _selectedInstanceMetaLabel;
-    private Label? _selectedInstanceStatusLabel;
     private ListBox? _instanceList;
     private System.Action? _refreshSortIcon;
     private string _searchQuery = string.Empty;
@@ -43,22 +50,31 @@ public sealed class MainWindow : Gtk.Window
     private IReadOnlyList<InstanceBrowserSummary> Instances = [];
     private InstanceId? PreferredSelectionInstanceId;
 
+    private Button? _btnPlay;
+    private Button? _btnStop;
+    private Button? _btnModify;
+    private Button? _btnFolder;
+    private Button? _btnCopy;
+    private Button? _btnDelete;
+
     public MainWindow(
-        AddInstanceWindow addInstanceWindow,
-        AccountsWindow accountsWindow,
+        IServiceProvider serviceProvider,
         InstanceBrowserRefreshService instanceBrowserRefreshService,
         ListInstanceBrowserSummariesUseCase listInstanceBrowserSummariesUseCase,
+        CloneInstanceUseCase cloneInstanceUseCase,
+        DeleteInstanceUseCase deleteInstanceUseCase,
+        LaunchController launchController,
         ILauncherPaths launcherPaths,
-        LauncherUiPreferencesService uiPreferences,
-        SettingsWindow settingsWindow) : base("BlockiumLauncher")
+        LauncherUiPreferencesService uiPreferences) : base("BlockiumLauncher")
     {
-        AddInstanceWindow = addInstanceWindow ?? throw new ArgumentNullException(nameof(addInstanceWindow));
-        AccountsWindow = accountsWindow ?? throw new ArgumentNullException(nameof(accountsWindow));
+        ServiceProvider = serviceProvider ?? throw new ArgumentNullException(nameof(serviceProvider));
         InstanceBrowserRefreshService = instanceBrowserRefreshService ?? throw new ArgumentNullException(nameof(instanceBrowserRefreshService));
         ListInstanceBrowserSummariesUseCase = listInstanceBrowserSummariesUseCase ?? throw new ArgumentNullException(nameof(listInstanceBrowserSummariesUseCase));
+        CloneInstanceUseCase = cloneInstanceUseCase ?? throw new ArgumentNullException(nameof(cloneInstanceUseCase));
+        DeleteInstanceUseCase = deleteInstanceUseCase ?? throw new ArgumentNullException(nameof(deleteInstanceUseCase));
+        LaunchController = launchController ?? throw new ArgumentNullException(nameof(launchController));
         LauncherPaths = launcherPaths ?? throw new ArgumentNullException(nameof(launcherPaths));
         UiPreferences = uiPreferences ?? throw new ArgumentNullException(nameof(uiPreferences));
-        SettingsWindow = settingsWindow ?? throw new ArgumentNullException(nameof(settingsWindow));
 
         SetDefaultSize(1180, 720);
         Resizable = true;
@@ -67,11 +83,17 @@ public sealed class MainWindow : Gtk.Window
         DeleteEvent += (_, args) =>
         {
             args.RetVal = false;
+            AddInstanceWindow?.ShutdownForApplicationExit();
+            DestroyOwnedWindow(ref AccountsWindow);
+            DestroyOwnedWindow(ref EditInstanceWindow);
+            DestroyOwnedWindow(ref SettingsWindow);
+            LaunchController.Dispose();
             Gtk.Application.Quit();
         };
 
         UiPreferences.Changed += HandlePreferencesChanged;
         InstanceBrowserRefreshService.RefreshRequested += HandleInstanceBrowserRefreshRequested;
+        LaunchController.StatusChanged += HandleLaunchStatusChanged;
 
         Titlebar = BuildTopbar();
         Add(BuildRoot());
@@ -92,6 +114,21 @@ public sealed class MainWindow : Gtk.Window
         _ = ReloadInstancesAsync();
     }
 
+    private void HandleLaunchStatusChanged(object? sender, InstanceId instanceId)
+    {
+        Gtk.Application.Invoke((_, _) =>
+        {
+            if (PreferredSelectionInstanceId == instanceId)
+            {
+                var summary = Instances.FirstOrDefault(x => x.InstanceId == instanceId);
+                if (summary != null)
+                {
+                    UpdateActionButtonsState(summary);
+                }
+            }
+        });
+    }
+
     private Widget BuildRoot()
     {
         return BuildBody();
@@ -107,7 +144,7 @@ public sealed class MainWindow : Gtk.Window
         };
         bar.StyleContext.AddClass("topbar-shell");
 
-        var group = new Box(Orientation.Horizontal, 8)
+        var group = new Box(Orientation.Horizontal, 6)
         {
             Halign = Align.Center
         };
@@ -124,7 +161,7 @@ public sealed class MainWindow : Gtk.Window
         titleHost.PackStart(group, false, false, 0);
 
         bar.CustomTitle = titleHost;
-        bar.PackStart(new Box(Orientation.Horizontal, 0) { WidthRequest = 44, HeightRequest = 1 });
+        bar.PackStart(new Box(Orientation.Horizontal, 0) { WidthRequest = 36, HeightRequest = 1 });
         bar.PackEnd(CreateAccountsToolbarButton());
         return bar;
     }
@@ -147,12 +184,12 @@ public sealed class MainWindow : Gtk.Window
         };
         shell.StyleContext.AddClass("sidebar-shell");
 
-        var sidebar = new Box(Orientation.Vertical, 18)
+        var sidebar = new Box(Orientation.Vertical, 14)
         {
-            MarginTop = 16,
-            MarginBottom = 16,
-            MarginStart = 16,
-            MarginEnd = 16
+            MarginTop = 12,
+            MarginBottom = 12,
+            MarginStart = 12,
+            MarginEnd = 12
         };
 
         sidebar.PackStart(BuildInstancePanel(), false, false, 0);
@@ -168,34 +205,36 @@ public sealed class MainWindow : Gtk.Window
         var content = new Box(Orientation.Horizontal, 14)
         {
             MarginTop = 2,
-            MarginBottom = 18
+            MarginBottom = 12
         };
         content.StyleContext.AddClass("sidebar-summary");
 
         _selectedInstanceIconShell = CreateInstanceIconShell(56, 56, null);
+        _selectedInstanceIconShell.Vexpand = false;
+        _selectedInstanceIconShell.Halign = Align.Start;
+        _selectedInstanceIconShell.Valign = Align.Start;
         var text = new Box(Orientation.Vertical, 4);
 
         _selectedInstanceNameLabel = new Label("No instances installed")
         {
-            Xalign = 0
+            Xalign = 0,
+            LineWrap = true,
+            LineWrapMode = Pango.WrapMode.WordChar,
+            MaxWidthChars = 24
         };
         _selectedInstanceNameLabel.StyleContext.AddClass("instance-name");
 
         _selectedInstanceMetaLabel = new Label("Create or import an instance to get started")
         {
-            Xalign = 0
+            Xalign = 0,
+            LineWrap = true,
+            LineWrapMode = Pango.WrapMode.WordChar,
+            MaxWidthChars = 24
         };
         _selectedInstanceMetaLabel.StyleContext.AddClass("secondary-text");
 
-        _selectedInstanceStatusLabel = new Label("Idle")
-        {
-            Xalign = 0
-        };
-        _selectedInstanceStatusLabel.StyleContext.AddClass("status-text");
-
         text.PackStart(_selectedInstanceNameLabel, false, false, 0);
         text.PackStart(_selectedInstanceMetaLabel, false, false, 0);
-        text.PackStart(_selectedInstanceStatusLabel, false, false, 0);
 
         content.PackStart(_selectedInstanceIconShell, false, false, 0);
         content.PackStart(text, true, true, 0);
@@ -205,18 +244,175 @@ public sealed class MainWindow : Gtk.Window
 
     private Widget BuildActionsPanel()
     {
-        var content = new Box(Orientation.Vertical, 10)
+        var content = new Box(Orientation.Vertical, 8)
         {
             MarginTop = 2
         };
         content.StyleContext.AddClass("sidebar-actions");
-        content.PackStart(CreateActionButton("Play", primary: true), false, false, 0);
-        content.PackStart(CreateActionButton("Stop"), false, false, 0);
-        content.PackStart(CreateActionButton("Modify"), false, false, 0);
-        content.PackStart(CreateActionButton("Folder"), false, false, 0);
-        content.PackStart(CreateActionButton("Copy"), false, false, 0);
-        content.PackStart(CreateActionButton("Delete", danger: true), false, false, 0);
+
+        _btnPlay = CreateActionButton("Play", primary: true);
+        _btnStop = CreateActionButton("Stop");
+        _btnModify = CreateActionButton("Modify");
+        _btnFolder = CreateActionButton("Folder");
+        _btnCopy = CreateActionButton("Copy");
+        _btnDelete = CreateActionButton("Delete", danger: true);
+
+        _btnPlay.Clicked += async (_, _) => await HandlePlayClickedAsync();
+        _btnStop.Clicked += async (_, _) => await HandleStopClickedAsync();
+        _btnModify.Clicked += async (_, _) => await HandleModifyClickedAsync();
+        _btnCopy.Clicked += async (_, _) => await HandleCopyClickedAsync();
+        _btnDelete.Clicked += async (_, _) => await HandleDeleteClickedAsync();
+
+        content.PackStart(_btnPlay, false, false, 0);
+        content.PackStart(_btnStop, false, false, 0);
+        content.PackStart(_btnModify, false, false, 0);
+        content.PackStart(_btnFolder, false, false, 0);
+        content.PackStart(_btnCopy, false, false, 0);
+        content.PackStart(_btnDelete, false, false, 0);
+
         return content;
+    }
+
+    private async Task HandlePlayClickedAsync()
+    {
+        if (PreferredSelectionInstanceId == null) return;
+        
+        var result = await LaunchController.StartLaunchAsync(PreferredSelectionInstanceId.Value);
+        if (result.IsFailure)
+        {
+            Gtk.Application.Invoke((_, _) => ShowError("Launch Failed", result.Error.Message));
+        }
+    }
+
+    private async Task HandleStopClickedAsync()
+    {
+        if (PreferredSelectionInstanceId == null) return;
+        
+        var result = await LaunchController.StopLaunchAsync(PreferredSelectionInstanceId.Value);
+        if (result.IsFailure)
+        {
+            Gtk.Application.Invoke((_, _) => ShowError("Stop Failed", result.Error.Message));
+        }
+    }
+
+    private async Task HandleModifyClickedAsync()
+    {
+        if (PreferredSelectionInstanceId == null) return;
+
+        var window = GetOrCreateEditInstanceWindow();
+        window.TransientFor = this;
+        if (!await window.LoadInstanceAsync(PreferredSelectionInstanceId.Value))
+        {
+            return;
+        }
+
+        window.ShowAll();
+        window.Present();
+    }
+
+    private async Task HandleCopyClickedAsync()
+    {
+        if (PreferredSelectionInstanceId is null)
+        {
+            return;
+        }
+
+        var sourceId = PreferredSelectionInstanceId.Value;
+        using var dialog = LauncherGtkChrome.CreateFormDialog(
+            this,
+            "Copy instance",
+            "Create a duplicated instance with a new name.",
+            resizable: false,
+            width: 420);
+        var cancelButton = new Button("Cancel");
+        cancelButton.StyleContext.AddClass("action-button");
+        dialog.AddActionWidget(cancelButton, ResponseType.Cancel);
+
+        var copyButton = new Button("Copy");
+        copyButton.StyleContext.AddClass("primary-button");
+        dialog.AddActionWidget(copyButton, ResponseType.Accept);
+        dialog.DefaultResponse = ResponseType.Accept;
+
+        var entry = new Entry
+        {
+            Text = $"{_selectedInstanceNameLabel?.Text} (Copy)",
+            Hexpand = true,
+        };
+        entry.StyleContext.AddClass("app-field");
+
+        var fieldLabel = new Label("Instance name")
+        {
+            Xalign = 0
+        };
+        fieldLabel.StyleContext.AddClass("app-field-label");
+
+        var content = dialog.ContentArea;
+        content.MarginTop = 16;
+        content.MarginBottom = 16;
+        content.MarginStart = 16;
+        content.MarginEnd = 16;
+        content.Spacing = 8;
+
+        content.PackStart(fieldLabel, false, false, 0);
+        content.PackStart(entry, false, false, 0);
+        content.ShowAll();
+
+        var result = (ResponseType)dialog.Run();
+        var newName = entry.Text;
+
+        if (result != ResponseType.Accept || string.IsNullOrWhiteSpace(newName))
+        {
+            return;
+        }
+
+        using var dialogLoader = LauncherGtkChrome.CreateBusyDialog(this, "Copying instance", "Duplicating instance files and metadata.");
+
+        try
+        {
+            var request = new CloneInstanceRequest(sourceId, newName);
+            var cloneResult = await CloneInstanceUseCase.ExecuteAsync(request);
+
+            if (cloneResult.IsFailure)
+            {
+                ShowError("Failed to copy instance", cloneResult.Error.Message);
+                return;
+            }
+
+            InstanceBrowserRefreshService.RequestRefresh(cloneResult.Value.InstanceId);
+        }
+        catch (Exception ex)
+        {
+            ShowError("Failed to copy instance", ex.Message);
+        }
+    }
+
+    private async Task HandleDeleteClickedAsync()
+    {
+        if (PreferredSelectionInstanceId is null)
+        {
+            return;
+        }
+
+        var sourceId = PreferredSelectionInstanceId.Value;
+        var instanceName = _selectedInstanceNameLabel?.Text ?? "this instance";
+
+        if (!LauncherGtkChrome.Confirm(this, "Delete instance", $"Are you sure you want to permanently delete entirely '{instanceName}'?\n\nThis will remove all saves, resource packs, configuration, and mods.", confirmText: "Delete", danger: true))
+        {
+            return;
+        }
+
+        using var dialogLoader = LauncherGtkChrome.CreateBusyDialog(this, "Deleting instance", "Removing files, saves, mods, and metadata.");
+
+        var request = new DeleteInstanceRequest(sourceId);
+        var result = await DeleteInstanceUseCase.ExecuteAsync(request);
+
+        if (result.IsFailure)
+        {
+            ShowError("Failed to delete instance", result.Error.Message);
+            return;
+        }
+
+        InstanceBrowserRefreshService.RequestRefresh(null);
     }
 
     private Widget BuildInstancesBrowser()
@@ -230,10 +426,10 @@ public sealed class MainWindow : Gtk.Window
 
         var content = new Box(Orientation.Vertical, 0)
         {
-            MarginTop = 12,
-            MarginBottom = 12,
-            MarginStart = 12,
-            MarginEnd = 12
+            MarginTop = 10,
+            MarginBottom = 10,
+            MarginStart = 10,
+            MarginEnd = 10
         };
 
         content.PackStart(BuildInstanceBrowserControls(), false, false, 0);
@@ -280,7 +476,7 @@ public sealed class MainWindow : Gtk.Window
     {
         var controls = new Box(Orientation.Horizontal, 10)
         {
-            MarginBottom = 12
+            MarginBottom = 8
         };
         controls.StyleContext.AddClass("browser-controls");
 
@@ -292,10 +488,10 @@ public sealed class MainWindow : Gtk.Window
 
         var searchContent = new Box(Orientation.Horizontal, 10)
         {
-            MarginTop = 9,
-            MarginBottom = 9,
-            MarginStart = 12,
-            MarginEnd = 12
+            MarginTop = 7,
+            MarginBottom = 7,
+            MarginStart = 10,
+            MarginEnd = 10
         };
 
         searchContent.PackStart(CreateRegisteredThemeIcon("search.svg", 16), false, false, 0);
@@ -334,8 +530,8 @@ public sealed class MainWindow : Gtk.Window
     {
         var button = new Button
         {
-            WidthRequest = 40,
-            HeightRequest = 40,
+            WidthRequest = 36,
+            HeightRequest = 36,
             Relief = ReliefStyle.None
         };
         button.StyleContext.AddClass("square-icon-button");
@@ -355,15 +551,16 @@ public sealed class MainWindow : Gtk.Window
 
     private Button CreateFilterButton()
     {
-        var button = CreateSquareIconButton("funnel-fill.svg", "view-filter-symbolic", "Filter instances");
-        var popover = BuildFilterPopover(button);
-        button.Clicked += (_, _) =>
+        _filterButton = CreateSquareIconButton("funnel-fill.svg", "view-filter-symbolic", "Filter instances");
+        _filterPopover = BuildFilterPopover(_filterButton);
+        _filterButton.Clicked += (_, _) =>
         {
-            popover.ShowAll();
-            popover.Popup();
+            RefreshFilterPopover();
+            _filterPopover?.ShowAll();
+            _filterPopover?.Popup();
         };
 
-        return button;
+        return _filterButton;
     }
 
     private Popover BuildSortPopover(Widget relativeTo)
@@ -495,6 +692,30 @@ public sealed class MainWindow : Gtk.Window
         return popover;
     }
 
+    private void RefreshFilterPopover()
+    {
+        if (_filterPopover is null || _filterButton is null)
+        {
+            return;
+        }
+
+        PruneUnavailableFilters();
+        _filterPopover.Hide();
+        _filterPopover.Destroy();
+        _filterPopover = BuildFilterPopover(_filterButton);
+    }
+
+    private void PruneUnavailableFilters()
+    {
+        var availableLoaders = Instances.Select(GetLoaderDisplayName).ToHashSet(StringComparer.Ordinal);
+        var availableVersions = Instances.Select(instance => instance.GameVersion).ToHashSet(StringComparer.Ordinal);
+        var availableTags = Instances.Select(GetStateTag).ToHashSet(StringComparer.Ordinal);
+
+        _selectedModLoaders.RemoveWhere(value => !availableLoaders.Contains(value));
+        _selectedVanillaVersions.RemoveWhere(value => !availableVersions.Contains(value));
+        _selectedTags.RemoveWhere(value => !availableTags.Contains(value));
+    }
+
     private Widget BuildFilterSection(string title, IEnumerable<string> values, HashSet<string> selectedValues)
     {
         var section = new Box(Orientation.Vertical, 6)
@@ -542,7 +763,7 @@ public sealed class MainWindow : Gtk.Window
 
         var outer = new Box(Orientation.Horizontal, 0)
         {
-            HeightRequest = 80,
+            HeightRequest = 68,
             Hexpand = true
         };
 
@@ -554,12 +775,12 @@ public sealed class MainWindow : Gtk.Window
         };
         accent.StyleContext.AddClass("instance-row-accent");
 
-        var content = new Box(Orientation.Horizontal, 14)
+        var content = new Box(Orientation.Horizontal, 10)
         {
-            MarginTop = 10,
-            MarginBottom = 10,
-            MarginStart = 16,
-            MarginEnd = 16,
+            MarginTop = 8,
+            MarginBottom = 8,
+            MarginStart = 12,
+            MarginEnd = 12,
             Halign = Align.Fill,
             Valign = Align.Center,
             Hexpand = true
@@ -570,10 +791,10 @@ public sealed class MainWindow : Gtk.Window
         {
             Halign = Align.Center,
             Valign = Align.Center,
-            WidthRequest = 56,
-            HeightRequest = 56
+            WidthRequest = 44,
+            HeightRequest = 44
         };
-        iconContainer.PackStart(CreateInstanceIconWidget(48, 48, instance.IconPath), false, false, 0);
+        iconContainer.PackStart(CreateInstanceIconWidget(40, 40, instance.IconPath), false, false, 0);
 
         var label = new Label(instance.Name)
         {
@@ -614,7 +835,7 @@ public sealed class MainWindow : Gtk.Window
 
         var box = new Box(Orientation.Vertical, 0)
         {
-            HeightRequest = 96,
+            HeightRequest = 80,
             MarginStart = 16,
             MarginEnd = 16
         };
@@ -730,11 +951,13 @@ public sealed class MainWindow : Gtk.Window
             if (result.IsSuccess)
             {
                 Instances = result.Value;
+                RefreshFilterPopover();
                 RefreshInstanceList();
                 return;
             }
 
             Instances = [];
+            RefreshFilterPopover();
             RefreshInstanceList();
             BindSelectedInstance(null);
         });
@@ -744,7 +967,6 @@ public sealed class MainWindow : Gtk.Window
     {
         if (_selectedInstanceNameLabel is null ||
             _selectedInstanceMetaLabel is null ||
-            _selectedInstanceStatusLabel is null ||
             _selectedInstanceIconShell is null)
         {
             return;
@@ -756,15 +978,39 @@ public sealed class MainWindow : Gtk.Window
             _selectedInstanceMetaLabel.Text = Instances.Count == 0
                 ? "Create or import an instance to get started"
                 : "Select an instance to see its summary";
-            _selectedInstanceStatusLabel.Text = "Idle";
             SetEventBoxChild(_selectedInstanceIconShell, CreateInstanceIconWidget(56, 56, null));
+            UpdateActionButtonsState(null);
             return;
         }
 
         _selectedInstanceNameLabel.Text = instance.Name;
         _selectedInstanceMetaLabel.Text = BuildInstanceMeta(instance);
-        _selectedInstanceStatusLabel.Text = BuildInstanceStatus(instance);
         SetEventBoxChild(_selectedInstanceIconShell, CreateInstanceIconWidget(56, 56, instance.IconPath));
+        UpdateActionButtonsState(instance);
+    }
+
+    private void UpdateActionButtonsState(InstanceBrowserSummary? instance)
+    {
+        var hasSelection = instance is not null;
+        var isRunning = hasSelection && LaunchController.IsRunning(instance!.InstanceId);
+
+        if (_btnPlay is not null)
+        {
+            _btnPlay.Sensitive = hasSelection && !isRunning;
+            SetActionButtonText(_btnPlay, isRunning ? "Running" : "Play");
+            SetPrimaryButtonState(_btnPlay, hasSelection && !isRunning);
+        }
+
+        if (_btnStop is not null)
+        {
+            _btnStop.Sensitive = hasSelection && isRunning;
+            SetPrimaryButtonState(_btnStop, hasSelection && isRunning);
+        }
+
+        if (_btnModify is not null) _btnModify.Sensitive = hasSelection && !isRunning;
+        if (_btnFolder is not null) _btnFolder.Sensitive = hasSelection;
+        if (_btnCopy is not null) _btnCopy.Sensitive = hasSelection && !isRunning;
+        if (_btnDelete is not null) _btnDelete.Sensitive = hasSelection && !isRunning;
     }
 
     private static string BuildInstanceMeta(InstanceBrowserSummary instance)
@@ -773,20 +1019,6 @@ public sealed class MainWindow : Gtk.Window
         return loaderText == "Vanilla"
             ? $"Minecraft {instance.GameVersion}"
             : $"Minecraft {instance.GameVersion} · {loaderText}";
-    }
-
-    private static string BuildInstanceStatus(InstanceBrowserSummary instance)
-    {
-        return instance.State switch
-        {
-            InstanceState.Installed when instance.LastPlayedAtUtc is not null => $"Last played {instance.LastPlayedAtUtc:yyyy-MM-dd}",
-            InstanceState.Installed => "Ready",
-            InstanceState.NeedsRepair => "Needs repair",
-            InstanceState.Broken => "Broken",
-            InstanceState.Updating => "Updating",
-            InstanceState.Created => "Preparing",
-            _ => instance.State.ToString()
-        };
     }
 
     private static string GetLoaderDisplayName(InstanceBrowserSummary instance)
@@ -835,7 +1067,29 @@ public sealed class MainWindow : Gtk.Window
         {
             try
             {
-                return new Image(new Pixbuf(resolvedIconPath, width, height, true))
+                using var original = new Pixbuf(resolvedIconPath);
+                var size = Math.Min(width, height);
+                
+                Pixbuf scaled;
+                if (original.Width == original.Height)
+                {
+                    scaled = original.ScaleSimple(size, size, InterpType.Bilinear);
+                }
+                else
+                {
+                    // Center and scale to fill the square while maintaining aspect ratio
+                    double ratio = (double)original.Width / original.Height;
+                    int targetW, targetH;
+                    if (ratio > 1) { targetW = (int)(size * ratio); targetH = size; }
+                    else { targetW = size; targetH = (int)(size / ratio); }
+                    
+                    using var intermediate = original.ScaleSimple(targetW, targetH, InterpType.Bilinear);
+                    scaled = new Pixbuf(Colorspace.Rgb, true, 8, size, size);
+                    scaled.Fill(0x00000000);
+                    intermediate.CopyArea((targetW - size) / 2, (targetH - size) / 2, size, size, scaled, 0, 0);
+                }
+
+                return new Image(scaled)
                 {
                     Halign = Align.Center,
                     Valign = Align.Center
@@ -855,7 +1109,7 @@ public sealed class MainWindow : Gtk.Window
         };
         fallback.Drawn += (_, args) =>
         {
-            args.Cr.SetSourceRGB(0.18, 0.48, 0.86);
+            args.Cr.SetSourceRGB(0.37, 0.45, 0.54);
             args.Cr.Rectangle(0, 0, width, height);
             args.Cr.Fill();
         };
@@ -870,7 +1124,19 @@ public sealed class MainWindow : Gtk.Window
             return iconPath;
         }
 
-        return System.IO.File.Exists(DefaultInstanceIconPath) ? DefaultInstanceIconPath : null;
+        return ResolveBundledDefaultInstanceIconPath();
+    }
+
+    private static string? ResolveBundledDefaultInstanceIconPath()
+    {
+        var outputPath = System.IO.Path.Combine(AppContext.BaseDirectory, "Assets", "Images", DefaultInstanceIconFileName);
+        if (System.IO.File.Exists(outputPath))
+        {
+            return outputPath;
+        }
+
+        var sourcePath = System.IO.Path.GetFullPath(System.IO.Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "Assets", "Images", DefaultInstanceIconFileName));
+        return System.IO.File.Exists(sourcePath) ? sourcePath : null;
     }
 
     private static void SetEventBoxChild(EventBox shell, Widget child)
@@ -926,21 +1192,141 @@ public sealed class MainWindow : Gtk.Window
     private Button CreateAddInstanceToolbarButton()
     {
         var button = CreateToolbarButton("Add instance", "plus-square-fill.svg", "list-add-symbolic");
-        button.Clicked += (_, _) => AddInstanceWindow.PresentFrom(this);
+        button.Clicked += (_, _) => GetOrCreateAddInstanceWindow().PresentFrom(this);
         return button;
+    }
+
+    private AddInstanceWindow GetOrCreateAddInstanceWindow()
+    {
+        if (AddInstanceWindow is not null)
+        {
+            return AddInstanceWindow;
+        }
+
+        var window = ServiceProvider.GetRequiredService<AddInstanceWindow>();
+        window.Destroyed += HandleAddInstanceWindowDestroyed;
+        AddInstanceWindow = window;
+        return window;
+    }
+
+    private void HandleAddInstanceWindowDestroyed(object? sender, EventArgs e)
+    {
+        if (sender is AddInstanceWindow window)
+        {
+            window.Destroyed -= HandleAddInstanceWindowDestroyed;
+            if (ReferenceEquals(AddInstanceWindow, window))
+            {
+                AddInstanceWindow = null;
+            }
+        }
+    }
+
+    private AccountsWindow GetOrCreateAccountsWindow()
+    {
+        if (AccountsWindow is not null)
+        {
+            return AccountsWindow;
+        }
+
+        var window = ServiceProvider.GetRequiredService<AccountsWindow>();
+        window.Destroyed += HandleAccountsWindowDestroyed;
+        AccountsWindow = window;
+        return window;
+    }
+
+    private EditInstanceWindow GetOrCreateEditInstanceWindow()
+    {
+        if (EditInstanceWindow is not null)
+        {
+            return EditInstanceWindow;
+        }
+
+        var window = ServiceProvider.GetRequiredService<EditInstanceWindow>();
+        window.Destroyed += HandleEditInstanceWindowDestroyed;
+        EditInstanceWindow = window;
+        return window;
+    }
+
+    private SettingsWindow GetOrCreateSettingsWindow()
+    {
+        if (SettingsWindow is not null)
+        {
+            return SettingsWindow;
+        }
+
+        var window = ServiceProvider.GetRequiredService<SettingsWindow>();
+        window.Destroyed += HandleSettingsWindowDestroyed;
+        SettingsWindow = window;
+        return window;
+    }
+
+    private void HandleAccountsWindowDestroyed(object? sender, EventArgs e)
+    {
+        if (sender is AccountsWindow window)
+        {
+            window.Destroyed -= HandleAccountsWindowDestroyed;
+            if (ReferenceEquals(AccountsWindow, window))
+            {
+                AccountsWindow = null;
+            }
+        }
+    }
+
+    private void HandleEditInstanceWindowDestroyed(object? sender, EventArgs e)
+    {
+        if (sender is EditInstanceWindow window)
+        {
+            window.Destroyed -= HandleEditInstanceWindowDestroyed;
+            if (ReferenceEquals(EditInstanceWindow, window))
+            {
+                EditInstanceWindow = null;
+            }
+        }
+    }
+
+    private void HandleSettingsWindowDestroyed(object? sender, EventArgs e)
+    {
+        if (sender is SettingsWindow window)
+        {
+            window.Destroyed -= HandleSettingsWindowDestroyed;
+            if (ReferenceEquals(SettingsWindow, window))
+            {
+                SettingsWindow = null;
+            }
+        }
+    }
+
+    private static void DestroyOwnedWindow<TWindow>(ref TWindow? window) where TWindow : Gtk.Window
+    {
+        if (window is null)
+        {
+            return;
+        }
+
+        try
+        {
+            window.Destroy();
+        }
+        catch
+        {
+        }
+        finally
+        {
+            window = null;
+        }
     }
 
     private Button CreateSettingsToolbarButton()
     {
         var button = CreateToolbarButton("Settings", "gear-fill.svg", "emblem-system-symbolic");
-        button.Clicked += (_, _) => SettingsWindow.PresentFrom(this);
+        button.Clicked += (_, _) => GetOrCreateSettingsWindow().PresentFrom(this);
         return button;
     }
 
     private Button CreateAccountsToolbarButton()
     {
         var button = CreateToolbarButton("Accounts", "person-circle.svg", "avatar-default-symbolic");
-        button.Clicked += (_, _) => AccountsWindow.PresentFrom(this);
+        button.Clicked += (_, _) => GetOrCreateAccountsWindow().PresentFrom(this);
         return button;
     }
 
@@ -1003,12 +1389,24 @@ public sealed class MainWindow : Gtk.Window
 
     private Button CreateActionButton(string text, bool primary = false, bool danger = false)
     {
-        var button = new Button(text)
+        var button = new Button
         {
             Hexpand = true,
             HeightRequest = 38
         };
         button.StyleContext.AddClass("action-button");
+
+        var label = new Label(text)
+        {
+            Xalign = 0.5f,
+            Yalign = 0.5f,
+            LineWrap = true,
+            LineWrapMode = Pango.WrapMode.WordChar,
+            Justify = Justification.Center,
+            MaxWidthChars = 16
+        };
+        label.StyleContext.AddClass("action-button-label");
+        button.Add(label);
 
         if (primary)
         {
@@ -1023,13 +1421,46 @@ public sealed class MainWindow : Gtk.Window
         return button;
     }
 
+    private static void SetActionButtonText(Button button, string text)
+    {
+        if (button.Child is Label label)
+        {
+            label.Text = text;
+            return;
+        }
+
+        if (button.Child is Container container)
+        {
+            foreach (var child in container.Children)
+            {
+                if (child is Label nestedLabel)
+                {
+                    nestedLabel.Text = text;
+                    return;
+                }
+            }
+        }
+    }
+
+    private static void SetPrimaryButtonState(Button button, bool isPrimary)
+    {
+        if (isPrimary)
+        {
+            button.StyleContext.AddClass("primary-button");
+        }
+        else
+        {
+            button.StyleContext.RemoveClass("primary-button");
+        }
+    }
+
     private Button CreateSquareIconButton(string assetFileName, string fallbackIconName, string tooltip)
     {
         _ = fallbackIconName;
         var button = new Button
         {
-            WidthRequest = 40,
-            HeightRequest = 40,
+            WidthRequest = 36,
+            HeightRequest = 36,
             Relief = ReliefStyle.None
         };
         button.StyleContext.AddClass("square-icon-button");
@@ -1106,7 +1537,7 @@ public sealed class MainWindow : Gtk.Window
         try
         {
             var svg = System.IO.File.ReadAllText(assetPath);
-            var color = UiPreferences.IsDarkTheme ? "#edf3f8" : "#22303c";
+            var color = UiPreferences.CurrentPalette.PrimaryText;
             var themedSvg = svg.Replace("currentColor", color, StringComparison.OrdinalIgnoreCase);
 
             using var loader = new PixbufLoader("image/svg+xml");
@@ -1159,9 +1590,9 @@ public sealed class MainWindow : Gtk.Window
     private void DrawToolbarIcon(Cairo.Context cr, string assetFileName, int size)
     {
         var iconName = System.IO.Path.GetFileNameWithoutExtension(assetFileName).ToLowerInvariant();
-        var color = UiPreferences.IsDarkTheme
+        var color = ParseThemeColor(UiPreferences.CurrentPalette.PrimaryText, fallback: UiPreferences.IsDarkTheme
             ? (r: 0.93, g: 0.95, b: 0.97)
-            : (r: 0.14, g: 0.19, b: 0.24);
+            : (r: 0.14, g: 0.19, b: 0.24));
 
         cr.SetSourceRGB(color.r, color.g, color.b);
         cr.LineWidth = Math.Max(1.4, size / 8.5);
@@ -1208,18 +1639,45 @@ public sealed class MainWindow : Gtk.Window
 
     private void ShowError(string title, string message)
     {
-        using var dialog = new MessageDialog(
-            this,
-            DialogFlags.Modal,
-            MessageType.Error,
-            ButtonsType.Ok,
-            message)
-        {
-            Title = title
-        };
+        LauncherGtkChrome.ShowMessage(this, title, message, MessageType.Error);
+    }
 
-        dialog.Run();
-        dialog.Destroy();
+    private static (double r, double g, double b) ParseThemeColor(string hexColor, (double r, double g, double b) fallback)
+    {
+        if (string.IsNullOrWhiteSpace(hexColor))
+        {
+            return fallback;
+        }
+
+        var value = hexColor.Trim();
+        if (!value.StartsWith('#') || (value.Length != 7 && value.Length != 4))
+        {
+            return fallback;
+        }
+
+        try
+        {
+            if (value.Length == 7)
+            {
+                return
+                (
+                    Convert.ToInt32(value.Substring(1, 2), 16) / 255d,
+                    Convert.ToInt32(value.Substring(3, 2), 16) / 255d,
+                    Convert.ToInt32(value.Substring(5, 2), 16) / 255d
+                );
+            }
+
+            return
+            (
+                Convert.ToInt32(new string(value[1], 2), 16) / 255d,
+                Convert.ToInt32(new string(value[2], 2), 16) / 255d,
+                Convert.ToInt32(new string(value[3], 2), 16) / 255d
+            );
+        }
+        catch
+        {
+            return fallback;
+        }
     }
 
     private static void DrawPlusSquareIcon(Cairo.Context cr, int size)

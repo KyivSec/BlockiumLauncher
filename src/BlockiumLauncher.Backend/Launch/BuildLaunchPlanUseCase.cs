@@ -4,11 +4,15 @@ using BlockiumLauncher.Application.Abstractions.Repositories;
 using BlockiumLauncher.Application.Abstractions.Services;
 using BlockiumLauncher.Application.Diagnostics;
 using BlockiumLauncher.Application.UseCases.Accounts;
+using BlockiumLauncher.Application.UseCases.Skins;
 using BlockiumLauncher.Contracts.Accounts;
 using BlockiumLauncher.Contracts.Launch;
 using BlockiumLauncher.Domain.Entities;
 using BlockiumLauncher.Domain.Enums;
+using BlockiumLauncher.Domain.ValueObjects;
 using BlockiumLauncher.Shared.Results;
+using System.Text;
+using System.Text.Json;
 
 namespace BlockiumLauncher.Application.UseCases.Launch;
 
@@ -22,6 +26,8 @@ public sealed class BuildLaunchPlanUseCase
     private readonly IRuntimeMetadataStore RuntimeMetadataStore;
     private readonly IStructuredLogger Logger;
     private readonly IOperationContextFactory OperationContextFactory;
+    private readonly ISkinLibraryRepository? SkinLibraryRepository;
+    private readonly IAccountAppearanceRepository? AccountAppearanceRepository;
 
     public BuildLaunchPlanUseCase(
         IInstanceRepository InstanceRepository,
@@ -35,6 +41,8 @@ public sealed class BuildLaunchPlanUseCase
             LoaderMetadataService,
             NoOpJavaRuntimeResolver.Instance,
             NullRuntimeMetadataStore.Instance,
+            null,
+            null,
             NullStructuredLogger.Instance,
             DefaultOperationContextFactory.Instance)
     {
@@ -54,6 +62,8 @@ public sealed class BuildLaunchPlanUseCase
             LoaderMetadataService,
             NoOpJavaRuntimeResolver.Instance,
             NullRuntimeMetadataStore.Instance,
+            null,
+            null,
             Logger,
             OperationContextFactory)
     {
@@ -66,6 +76,8 @@ public sealed class BuildLaunchPlanUseCase
         ILoaderMetadataService LoaderMetadataService,
         IJavaRuntimeResolver JavaRuntimeResolver,
         IRuntimeMetadataStore RuntimeMetadataStore,
+        ISkinLibraryRepository? SkinLibraryRepository,
+        IAccountAppearanceRepository? AccountAppearanceRepository,
         IStructuredLogger Logger,
         IOperationContextFactory OperationContextFactory)
     {
@@ -75,6 +87,8 @@ public sealed class BuildLaunchPlanUseCase
         this.LoaderMetadataService = LoaderMetadataService ?? throw new ArgumentNullException(nameof(LoaderMetadataService));
         this.JavaRuntimeResolver = JavaRuntimeResolver ?? throw new ArgumentNullException(nameof(JavaRuntimeResolver));
         this.RuntimeMetadataStore = RuntimeMetadataStore ?? throw new ArgumentNullException(nameof(RuntimeMetadataStore));
+        this.SkinLibraryRepository = SkinLibraryRepository;
+        this.AccountAppearanceRepository = AccountAppearanceRepository;
         this.Logger = Logger ?? throw new ArgumentNullException(nameof(Logger));
         this.OperationContextFactory = OperationContextFactory ?? throw new ArgumentNullException(nameof(OperationContextFactory));
     }
@@ -121,6 +135,9 @@ public sealed class BuildLaunchPlanUseCase
         {
             var JavaResolveResult = await JavaRuntimeResolver.ResolveExecutablePathAsync(
                 Instance.GameVersion.ToString(),
+                Instance.LoaderType,
+                Instance.LaunchProfile.PreferredJavaMajor,
+                Instance.LaunchProfile.SkipCompatibilityChecks,
                 CancellationToken).ConfigureAwait(false);
 
             if (JavaResolveResult.IsFailure)
@@ -184,7 +201,7 @@ public sealed class BuildLaunchPlanUseCase
             return Result<LaunchPlanDto>.Failure(AccountResult.Error);
         }
 
-        var Account = AccountResult.Value;
+        var Account = await EnrichLaunchAccountAsync(AccountResult.Value, CancellationToken).ConfigureAwait(false);
         var RuntimeMetadata = await RuntimeMetadataStore.LoadAsync(WorkingDirectory, CancellationToken).ConfigureAwait(false);
 
         var ResolvedMainClass = LaunchPlanRuntimeSupport.ResolveMainClass(Request, RuntimeMetadata);
@@ -282,6 +299,78 @@ public sealed class BuildLaunchPlanUseCase
         });
 
         return Result<LaunchPlanDto>.Success(Plan);
+    }
+
+    private async Task<LaunchAccountContextDto> EnrichLaunchAccountAsync(
+        LaunchAccountContextDto account,
+        CancellationToken cancellationToken)
+    {
+        if (SkinLibraryRepository is null || AccountAppearanceRepository is null)
+        {
+            return account;
+        }
+
+        AccountId accountId;
+        try
+        {
+            accountId = new AccountId(account.AccountId);
+        }
+        catch (ArgumentException)
+        {
+            return account;
+        }
+
+        var selection = await AccountAppearanceRepository.GetAsync(accountId, cancellationToken).ConfigureAwait(false);
+        if (selection is null)
+        {
+            return account;
+        }
+
+        SkinAssetSummary? skin = null;
+        CapeAssetSummary? cape = null;
+
+        if (!string.IsNullOrWhiteSpace(selection.SelectedSkinId))
+        {
+            skin = await SkinLibraryRepository.GetSkinByIdAsync(selection.SelectedSkinId, cancellationToken).ConfigureAwait(false);
+        }
+
+        if (!string.IsNullOrWhiteSpace(selection.SelectedCapeId))
+        {
+            cape = await SkinLibraryRepository.GetCapeByIdAsync(selection.SelectedCapeId, cancellationToken).ConfigureAwait(false);
+        }
+
+        var userPropertiesJson = BuildUserPropertiesJson(account, skin, cape);
+        if (string.Equals(userPropertiesJson, "{}", StringComparison.Ordinal))
+        {
+            return account;
+        }
+
+        return new LaunchAccountContextDto
+        {
+            AccountId = account.AccountId,
+            Username = account.Username,
+            PlayerUuid = account.PlayerUuid,
+            IsOffline = account.IsOffline,
+            UserPropertiesJson = userPropertiesJson
+        };
+    }
+
+    private static string BuildUserPropertiesJson(
+        LaunchAccountContextDto account,
+        SkinAssetSummary? skin,
+        CapeAssetSummary? cape)
+    {
+        _ = account;
+        _ = skin;
+        _ = cape;
+
+        // Modern Minecraft clients already launch correctly with empty user properties.
+        // The launcher's synthesized offline skin/cape payload was causing the client to
+        // reject --userProperties as malformed JSON and abort during startup.
+        //
+        // Until we have a client-compatible offline skin injection path, prefer a stable
+        // launch over passing custom local texture metadata here.
+        return "{}";
     }
 
 }

@@ -53,14 +53,23 @@ public sealed class InstallPlanBuilder
             }
 
             var IsVanilla = Request.LoaderType == LoaderType.Vanilla;
+            string? effectiveLoaderVersion = string.IsNullOrWhiteSpace(Request.LoaderVersion)
+                ? null
+                : Request.LoaderVersion.Trim();
             if (!IsVanilla)
             {
-                if (string.IsNullOrWhiteSpace(Request.LoaderVersion))
+                if (string.IsNullOrWhiteSpace(effectiveLoaderVersion))
                 {
-                    return Result<InstallPlan>.Failure(InstallErrors.InvalidRequest);
+                    var resolvedLoaderVersion = await ResolvePreferredLoaderVersionAsync(Request.LoaderType, Request.GameVersion, CancellationToken).ConfigureAwait(false);
+                    if (resolvedLoaderVersion.IsFailure)
+                    {
+                        return Result<InstallPlan>.Failure(resolvedLoaderVersion.Error);
+                    }
+
+                    effectiveLoaderVersion = resolvedLoaderVersion.Value;
                 }
 
-                var LoaderExists = await TryValidateLoaderVersionAsync(Request.LoaderType, Request.GameVersion, Request.LoaderVersion!, CancellationToken).ConfigureAwait(false);
+                var LoaderExists = await TryValidateLoaderVersionAsync(Request.LoaderType, Request.GameVersion, effectiveLoaderVersion!, CancellationToken).ConfigureAwait(false);
                 if (!LoaderExists)
                 {
                     return Result<InstallPlan>.Failure(InstallErrors.LoaderNotFound);
@@ -100,7 +109,7 @@ public sealed class InstallPlanBuilder
                 InstanceName = Request.InstanceName.Trim(),
                 GameVersion = Request.GameVersion.Trim(),
                 LoaderType = Request.LoaderType,
-                LoaderVersion = string.IsNullOrWhiteSpace(Request.LoaderVersion) ? null : Request.LoaderVersion.Trim(),
+                LoaderVersion = effectiveLoaderVersion,
                 TargetDirectory = TargetDirectory,
                 DownloadRuntime = Request.DownloadRuntime,
                 Steps = Steps
@@ -174,6 +183,29 @@ public sealed class InstallPlanBuilder
             Value.LoaderType == LoaderType &&
             string.Equals(Value.GameVersion.ToString(), GameVersion, StringComparison.OrdinalIgnoreCase) &&
             string.Equals(Value.LoaderVersion, LoaderVersion, StringComparison.OrdinalIgnoreCase));
+    }
+
+    private async Task<Result<string>> ResolvePreferredLoaderVersionAsync(
+        LoaderType loaderType,
+        string gameVersion,
+        CancellationToken cancellationToken)
+    {
+        var result = await LoaderMetadataService
+            .GetLoaderVersionsAsync(loaderType, CreateVersionId(gameVersion), cancellationToken)
+            .ConfigureAwait(false);
+        if (result.IsFailure)
+        {
+            return Result<string>.Failure(result.Error);
+        }
+
+        var preferred = result.Value
+            .OrderByDescending(static version => version.IsStable)
+            .ThenByDescending(static version => version.LoaderVersion, StringComparer.OrdinalIgnoreCase)
+            .FirstOrDefault();
+
+        return preferred is null
+            ? Result<string>.Failure(InstallErrors.LoaderNotFound)
+            : Result<string>.Success(preferred.LoaderVersion);
     }
 
     private static bool MatchesVersion(object? Value, string GameVersion)

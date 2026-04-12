@@ -40,6 +40,13 @@ public interface IInstanceContentMetadataRepository
     Task SaveAsync(string installLocation, InstanceContentMetadata metadata, CancellationToken cancellationToken = default);
 }
 
+public interface IInstanceModpackMetadataRepository
+{
+    Task<InstanceModpackMetadata?> LoadAsync(string installLocation, CancellationToken cancellationToken = default);
+    Task SaveAsync(string installLocation, InstanceModpackMetadata metadata, CancellationToken cancellationToken = default);
+    Task DeleteAsync(string installLocation, CancellationToken cancellationToken = default);
+}
+
 public interface IInstanceRepository
 {
     Task<IReadOnlyList<LauncherInstance>> ListAsync(CancellationToken CancellationToken);
@@ -55,6 +62,12 @@ public interface IJavaInstallationRepository
     Task<JavaInstallation?> GetByIdAsync(JavaInstallationId JavaInstallationId, CancellationToken CancellationToken);
     Task SaveAsync(JavaInstallation JavaInstallation, CancellationToken CancellationToken);
     Task DeleteAsync(JavaInstallationId JavaInstallationId, CancellationToken CancellationToken);
+}
+
+public interface ILauncherRuntimeSettingsRepository
+{
+    Task<LauncherRuntimeSettings> LoadAsync(CancellationToken cancellationToken = default);
+    Task SaveAsync(LauncherRuntimeSettings settings, CancellationToken cancellationToken = default);
 }
 
 public interface IMetadataCacheRepository
